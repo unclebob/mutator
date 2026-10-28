@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from mutator.crapper_link import ensure_crapper
+from mutator.kotlin_version import before_1_9
 from mutator.model import Site
 from mutator.sites import discover_raw
 
@@ -54,6 +55,8 @@ def is_private(language: str, name: str, source: str, start: int, end: int) -> b
         return bool(re.match(r"\(defn-", header))
     if language == "java":
         return bool(re.search(r"\bprivate\b", header))
+    if language == "kotlin":
+        return bool(re.search(r"\b(?:private|internal)\b", header))
     if language == "go":
         return name[:1].islower()
     if language == "python":
@@ -150,7 +153,8 @@ def sites_in_file(source: str, path: Path, root: Path, file_key: str) -> list[Si
         id(fn): is_private(language, fn.name, source, fn.start_line, fn.end_line) for fn in functions
     }
     found: list[Site] = []
-    for raw in discover_raw(source, language, path.as_posix()):
+    legacy = language == "kotlin" and before_1_9(path, root)
+    for raw in discover_raw(source, language, path.as_posix(), legacy):
         owner = _owner(functions, raw.line, raw.start)
         if owner is None:
             continue

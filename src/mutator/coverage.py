@@ -7,6 +7,7 @@ A file that does not appear in a report has no coverage data.
 
 from __future__ import annotations
 
+import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -128,10 +129,19 @@ def _covered_from_pairs(lines: dict[int, tuple[int, int]] | None) -> set[int] | 
     return {number for number, (covered, _total) in lines.items() if covered > 0}
 
 
-def _jacoco_paths(root: Path) -> list[Path]:
-    paths = [root / "target" / "site" / "jacoco" / "jacoco.xml"]
-    paths.extend(root.glob("*/target/site/jacoco/jacoco.xml"))
-    paths.extend(root.glob("*/*/target/site/jacoco/jacoco.xml"))
+_JACOCO_REPORTS = (
+    "target/site/jacoco/jacoco.xml",
+    "build/reports/jacoco/test/jacocoTestReport.xml",
+)
+
+
+def _jacoco_paths(root: Path, crapper) -> list[Path]:
+    reports = getattr(crapper.coverage, "_JACOCO_REPORTS", _JACOCO_REPORTS)
+    paths: list[Path] = []
+    for report in reports:
+        paths.append(root / report)
+        paths.extend(root.glob(f"*/{report}"))
+        paths.extend(root.glob(f"*/*/{report}"))
     return paths
 
 
@@ -180,7 +190,7 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
     crapper = ensure_crapper()
     found: dict[str, set[int]] = {}
     seen: set[Path] = set()
-    for path in _jacoco_paths(root):
+    for path in _jacoco_paths(root, crapper):
         if not path.is_file():
             continue
         resolved = path.resolve()
@@ -192,6 +202,30 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
             continue
         found.update(_package_lines(xml_root))
     return found
+
+
+_PACKAGE = re.compile(r"^\s*package\s+([\w.`]+)", re.MULTILINE)
+
+
+def _package_key(source_path: Path) -> str | None:
+    try:
+        text = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _PACKAGE.search(text)
+    if match is None:
+        return source_path.name
+    return match.group(1).replace("`", "").replace(".", "/") + "/" + source_path.name
+
+
+def _jvm_lines(index: dict[str, set[int]], source_path: Path, path: str) -> set[int] | None:
+    found = _lookup(index, path)
+    if found is not None:
+        return found
+    key = _package_key(source_path)
+    if key is None:
+        return None
+    return index.get(key)
 
 
 def _go_lines(profile, source_path: str) -> set[int] | None:
@@ -214,8 +248,8 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
 
     crapper = ensure_crapper()
     path = source_path.resolve().as_posix()
-    if language == "java":
-        return _lookup(_jacoco_index(root), path)
+    if language in {"java", "kotlin"}:
+        return _jvm_lines(_jacoco_index(root), source_path, path)
     bundle = crapper.coverage.load_bundle(root)
     if language == "go":
         return _go_lines(bundle.go_profile, path)

@@ -1,8 +1,8 @@
 # mutator
 
-Mutation testing for Clojure, Java, Go, TypeScript, Rust, and Python. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
+Mutation testing for Clojure, Java, Kotlin, Go, TypeScript, Rust, and Python. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
 
-Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, and Python use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
+Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). Kotlin, TypeScript, Rust, and Python use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
 
 A mutant is killed when the tests fail or time out. It survives when the tests still pass. A site on a line the coverage report does not hit is uncovered and is not run. The score uml-viewer paints is killed / (killed + survived).
 
@@ -79,21 +79,23 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 | --- | --- | --- |
 | Clojure | the `ns` | the `defn` / `defn-` name |
 | Java | `package.Class`, or `package.Outer.Inner` | the method name |
+| Kotlin | `package.Class`, `package.Outer.Inner`, or `package.Class.Companion`; `package.FileNameKt` (or the `@file:JvmName`) for a top-level function | the function name |
 | Go | the package import path, or `import/path.Receiver` | the function or method name |
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
 | Rust | `crate::module`, or `crate::module::Type` | the function or method name |
 | Python | the dotted module path, or `module.Class` | the function or method name |
 
-`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, or a TypeScript `private` / `#` name uses `defn-/`.
+`defn-` is Clojure's private form. Elsewhere a private Java method, a `private` or `internal` Kotlin function, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, or a TypeScript `private` / `#` name uses `defn-/`.
 
 ## What each language mutates
 
-Tokens inside strings, comments, and quoted Clojure forms are left alone. A replacement that does not compile fails the test run and counts as killed.
+Tokens inside strings, comments, quoted Clojure forms, Java and Kotlin annotations, and code the grammar cannot parse are left alone. A replacement that does not compile fails the test run and counts as killed.
 
 | Language | Mutations |
 | --- | --- |
 | Clojure | clj-mutate's head symbols: `+`/`-`, `*` to `/`, `inc`/`dec`, comparisons, `=`/`not=`, `if`/`if-not`, `when`/`when-not`, `and`/`or`, and the seq, predicate, and coercion pairs. `true`/`false` and `0`/`1` anywhere. |
 | Java | `true`/`false`, `==`/`!=`, `<`/`<=`, `>`/`>=`, `+`/`-`, `*`/`/`, `&&`/`||`, delete `!` and unary `-`, `0`/`1`. Constructors are not entries, matching crapper. |
+| Kotlin | the Java set, plus `===`/`!==`, `is`/`!is`, `in`/`!in`, `..`/`..<`, `until` to `..`, and `a ?: b` to `a!!`. A project whose build names a Kotlin version before 1.9 gets `..` to `until`, since it has no `..<`. `?.` and `!!` are left alone: removing either does not compile on a nullable value and changes nothing on a non-null one. |
 | Go | mutate4go: `+`/`-`, `*` to `/` only, comparisons, `==`/`!=`, `true`/`false`, `&&`/`||`, `0`/`1`. |
 | TypeScript | the Java set, plus `===`/`!==`, `??` to `||`, and `?.` to `.`. A call or index drops `?.` (`a?.()` becomes `a()`). `.js`, `.jsx`, `.mjs`, and `.cjs` use these rules. |
 | Rust | the Java set (`&&`/`||`, `!`, unary `-`). |
@@ -106,11 +108,13 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | Language | Command | Where |
 | --- | --- | --- |
 | Clojure | `clj -M:spec --tag ~no-mutate` when Speclj is on the classpath, otherwise `clj -M:test` or `bb spec` | nearest `deps.edn` or `bb.edn` |
-| Java | `mvn -q test -DexcludeTags=no-mutate` | nearest `pom.xml` |
+| Java, Kotlin | `mvn -q test -DexcludeTags=no-mutate`, or `gradlew test` (`gradle test` without a wrapper) when the nearest build file is `build.gradle` or `build.gradle.kts` | nearest `pom.xml` or Gradle build file; Maven wins when a module has both |
 | Go | `go test -count=1` of the file's package | nearest `go.mod` |
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
+
+Gradle has no counterpart to `-DexcludeTags`. To skip `no-mutate` tests on Gradle, pass a `--test-command` your build understands.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 

@@ -5,6 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+def _one_line(text: str, limit: int = 40) -> str:
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 3] + "..."
+
+
 @dataclass(frozen=True)
 class Site:
     """One replacement inside a function crapper would score."""
@@ -27,7 +34,7 @@ class Site:
     def description(self) -> str:
         if self.mutant == "":
             return f"delete {self.original}"
-        return f"{self.original} -> {self.mutant}"
+        return f"{_one_line(self.original)} -> {self.mutant}"
 
 
 @dataclass

@@ -36,9 +36,20 @@ _BINARY_PARENTS = {
     "binary_operator",
     "comparison_operator",
     "boolean_operator",
+    "comparison_expression",
+    "equality_expression",
+    "conjunction_expression",
+    "disjunction_expression",
+    "additive_expression",
+    "multiplicative_expression",
 }
 
-_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator"}
+_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator", "prefix_expression"}
+
+_SKIPPED_SUBTREES = {"ERROR", "annotation", "file_annotation"}
+
+_KOTLIN_RANGES = {"..": "..<", "..<": ".."}
+_LEGACY_RANGES = {"..": "until"}
 
 _BOOLEANS = {"true": "false", "false": "true", "True": "False", "False": "True"}
 
@@ -158,14 +169,16 @@ def _optional_mutant(node) -> str | None:
     return None
 
 
-def _add(found: list[RawSite], node, original: str, mutant: str, category: str) -> None:
+def _add(
+    found: list[RawSite], node, original: str, mutant: str, category: str, start: int = -1, end: int = -1
+) -> None:
     if mutant == original:
         return
     found.append(
         RawSite(
             line=node.start_point[0] + 1,
-            start=node.start_byte,
-            end=node.end_byte,
+            start=node.start_byte if start < 0 else start,
+            end=node.end_byte if end < 0 else end,
             original=original,
             mutant=mutant,
             category=category,
@@ -174,14 +187,19 @@ def _add(found: list[RawSite], node, original: str, mutant: str, category: str) 
     )
 
 
-def _is_statement(node_type: str) -> bool:
-    return node_type.endswith("_statement") or node_type.endswith("_declaration")
+_KOTLIN_STATEMENT_PARENTS = {"statements", "control_structure_body", "function_body"}
+
+
+def _is_statement(node) -> bool:
+    if node.type.endswith("_statement") or node.type.endswith("_declaration"):
+        return True
+    return node.type == "when_entry" or _parent_type(node) in _KOTLIN_STATEMENT_PARENTS
 
 
 def _statement_line(node) -> int:
     current = node.parent
     while current is not None:
-        if _is_statement(current.type):
+        if _is_statement(current):
             return current.start_point[0] + 1
         current = current.parent
     return node.start_point[0] + 1
@@ -295,6 +313,43 @@ def _visit_optional(node, token: str, language: str, found: list[RawSite]) -> No
         _add(found, node, "?.", optional, "optional")
 
 
+def _visit_check(node, token: str, parent: str, found: list[RawSite]) -> None:
+    if parent != "check_expression":
+        return
+    if token == "!":
+        _add(found, node, token, "", "check")
+        return
+    previous = node.prev_sibling
+    if token in {"is", "in"} and (previous is None or previous.type != "!"):
+        _add(found, node, token, "!" + token, "check")
+
+
+def _visit_range(node, token: str, parent: str, found: list[RawSite], legacy: bool) -> None:
+    ranges = _LEGACY_RANGES if legacy else _KOTLIN_RANGES
+    if parent == "range_expression" and token in ranges:
+        _add(found, node, token, ranges[token], "range")
+        return
+    if token == "until" and parent == "infix_expression" and node.parent.child(1).id == node.id:
+        _add(found, node, token, "..", "range")
+
+
+def _visit_elvis(node, token: str, parent: str, found: list[RawSite]) -> None:
+    if token != "?:" or parent != "elvis_expression" or node.prev_sibling is None:
+        return
+    elvis = node.parent
+    start = node.prev_sibling.end_byte
+    original = elvis.text[start - elvis.start_byte :].decode("utf-8")
+    _add(found, node, original, "!!", "elvis", start=start, end=elvis.end_byte)
+
+
+def _visit_kotlin(node, token: str, parent: str, language: str, found: list[RawSite]) -> None:
+    if language not in {"kotlin", "kotlin-legacy"}:
+        return
+    _visit_check(node, token, parent, found)
+    _visit_range(node, token, parent, found, language == "kotlin-legacy")
+    _visit_elvis(node, token, parent, found)
+
+
 def _visit_not(node, token: str, parent: str, found: list[RawSite]) -> None:
     if token in {"!", "not"} and parent in _UNARY_PARENTS | {"comparison_operator"}:
         _add(found, node, token, "", "unary")
@@ -330,6 +385,7 @@ def _visit_leaf(node, data: bytes, language: str, found: list[RawSite]) -> None:
     parent = _parent_type(node)
     _visit_binary(node, token, parent, language, found)
     _visit_optional(node, token, language, found)
+    _visit_kotlin(node, token, parent, language, found)
     _visit_not(node, token, parent, found)
     _visit_negation(node, token, parent, found)
     _visit_boolean_token(node, token, found)
@@ -350,11 +406,13 @@ def _visit(node, data: bytes, language: str, found: list[RawSite]) -> None:
     stack = [node]
     while stack:
         current = stack.pop()
+        if current.type in _SKIPPED_SUBTREES:
+            continue
         _visit_node(current, data, language, found)
         stack.extend(reversed(current.children))
 
 
-def discover_raw(source: str, language: str, path: str) -> list[RawSite]:
+def discover_raw(source: str, language: str, path: str, legacy_ranges: bool = False) -> list[RawSite]:
     """Mutation sites in source order. Offsets are UTF-8 byte offsets."""
 
     crapper = ensure_crapper()
@@ -365,7 +423,8 @@ def discover_raw(source: str, language: str, path: str) -> list[RawSite]:
     if language == "clojure":
         _visit_clojure(tree.root_node, data, found)
     else:
-        _visit(tree.root_node, data, language, found)
+        visited = "kotlin-legacy" if language == "kotlin" and legacy_ranges else language
+        _visit(tree.root_node, data, visited, found)
     found.sort(key=lambda site: (site.line, site.start, site.end))
     return found
 

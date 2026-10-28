@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 from mutator.functions import form_id, is_private, project_functions, sites_in_file
@@ -234,3 +235,170 @@ def test_a_site_remembers_where_its_statement_starts(tmp_path):
     assert (4, "+", 2) in anchors
     assert (4, "1", 2) in anchors
     assert (7, "true", 6) in anchors
+
+
+def test_kotlin_mutates_the_operators_java_does(tmp_path):
+    java = """package demo;
+public class Calc {
+  public int sign(int x) {
+    if (x > 0) return 1;
+    if (x < 0) return -1;
+    return 0;
+  }
+  public boolean ok(boolean a, boolean b, int v) { return a && !b || v == 0 && v != 1 && v >= 2 && v <= 3; }
+  public int sum(int n) { return n * 2 / 3 + 1 - 4; }
+}
+"""
+    kotlin = """package demo
+class Calc {
+    fun sign(x: Int): Int {
+        if (x > 0) return 1
+        if (x < 0) return -1
+        return 0
+    }
+    fun ok(a: Boolean, b: Boolean, v: Int): Boolean = a && !b || v == 0 && v != 1 && v >= 2 && v <= 3
+    fun sum(n: Int): Int = n * 2 / 3 + 1 - 4
+}
+"""
+    kinds = lambda sites: sorted((site.name, site.original, site.mutant) for site in sites)
+    java_sites = _sites(tmp_path, "src/main/java/demo/Calc.java", java)
+    kotlin_sites = _sites(tmp_path, "src/main/kotlin/demo/Calc.kt", kotlin)
+    assert len(java_sites) == 25
+    assert kinds(kotlin_sites) == kinds(java_sites)
+
+
+def test_kotlin_mutates_its_own_operators(tmp_path):
+    source = """package demo
+class Calc {
+    fun len(s: String?): Int = s?.length ?: 0
+    fun check(o: Any?, xs: List<Int>): Boolean = o is String && o !is Int && 1 in xs && 2 !in xs
+    fun span(n: Int) {
+        for (i in 2..n) {}
+        for (j in 2 until n) {}
+        for (k in 2..<n) {}
+    }
+    fun force(o: Any?): Int = o!!.hashCode()
+}
+"""
+    sites = _sites(tmp_path, "src/main/kotlin/demo/Calc.kt", source)
+    described = {(site.name, site.original, site.mutant) for site in sites}
+    assert described == {
+        ("len", " ?: 0", "!!"),
+        ("len", "0", "1"),
+        ("check", "is", "!is"),
+        ("check", "!", ""),
+        ("check", "1", "0"),
+        ("check", "in", "!in"),
+        ("check", "&&", "||"),
+        ("span", "..", "..<"),
+        ("span", "until", ".."),
+        ("span", "..<", ".."),
+    }
+    elvis = next(site for site in sites if site.mutant == "!!")
+    assert source.encode()[elvis.start : elvis.end] == b" ?: 0"
+    deleted = [site for site in sites if site.original == "!"]
+    assert len(deleted) == 2
+
+
+def test_kotlin_marks_private_and_internal_functions_private(tmp_path):
+    source = """package demo
+class Calc {
+    private fun hide(x: Int): Boolean = x > 0
+    internal fun shared(x: Int): Boolean = x > 0
+    fun open(x: Int): Boolean = x > 0
+}
+"""
+    sites = _sites(tmp_path, "src/main/kotlin/demo/Calc.kt", source)
+    assert {site.form_id for site in sites} == {"defn-/hide", "defn-/shared", "defn/open"}
+    assert {site.namespace for site in sites} == {"demo.Calc"}
+
+
+def test_a_kotlin_site_is_anchored_to_its_statement_not_its_function(tmp_path):
+    source = """package demo
+fun sign(x: Int): Int {
+    val y = x +
+        1
+    if (y > 0)
+        return 1
+    return listOf(x).count { it < 2 }
+}
+"""
+    sites = _sites(tmp_path, "src/main/kotlin/demo/Sign.kt", source)
+    anchors = {(site.line, site.original, site.anchor_line) for site in sites}
+    assert (3, "+", 3) in anchors
+    assert (4, "1", 3) in anchors
+    assert (5, ">", 5) in anchors
+    assert (6, "1", 6) in anchors
+    assert (7, "<", 7) in anchors
+
+
+def test_kotlin_before_1_9_mutates_ranges_to_until(tmp_path):
+    (tmp_path / "build.gradle.kts").write_text('plugins { kotlin("jvm") version "1.8.22" }\n', encoding="utf-8")
+    source = """package demo
+fun span(n: Int) {
+    for (i in 2..n) {}
+    for (j in 2 until n) {}
+}
+"""
+    sites = _sites(tmp_path, "src/main/kotlin/demo/Span.kt", source)
+    ranges = {(site.original, site.mutant) for site in sites if site.category == "range"}
+    assert ranges == {("..", "until"), ("until", "..")}
+
+
+def test_a_parse_error_subtree_has_no_sites():
+    source = """fun f(x: Int): Int {
+    return when { x > 0 -> 1 else 0 == 1 }
+}
+"""
+    raw = discover_raw(source, "kotlin", "Demo.kt")
+    assert [(site.original, site.mutant) for site in raw] == [(">", ">="), ("0", "1"), ("1", "0")]
+
+
+def test_a_multi_line_elvis_reports_on_one_line(tmp_path):
+    source = """package demo
+fun queue(q: List<Int>?): List<Int> = q
+    ?: listOf(1, 2, 3).map { it * 2 }.filter { value -> value > 2 }.sortedDescending()
+"""
+    sites = _sites(tmp_path, "src/main/kotlin/demo/Queue.kt", source)
+    elvis = next(site for site in sites if site.mutant == "!!")
+    assert elvis.original.startswith("\n    ?: listOf")
+    assert elvis.description == "?: listOf(1, 2, 3).map { it * 2 }.fil... -> !!"
+
+
+_ISSUE6 = Path(__file__).parent / "fixtures" / "issue6"
+
+
+def _fixture_sites(tmp_path: Path, name: str, relative: str):
+    path = tmp_path / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy(_ISSUE6 / name, path)
+    sites = sites_in_file(path.read_text(encoding="utf-8"), path, tmp_path, relative)
+    return [(site.name, site.original, site.mutant) for site in sites]
+
+
+def test_the_issue6_class_mutates_the_same_operators_in_java_and_kotlin(tmp_path):
+    java = _fixture_sites(tmp_path, "Calc.java", "src/main/java/demo/Calc.java")
+    kotlin = _fixture_sites(tmp_path, "Calc.kt", "src/main/kotlin/demo/Calc.kt")
+    assert len(java) == 16
+    assert len(kotlin) == 15
+    assert java[:13] == kotlin[:13]
+    assert java[13:] == [("orZero", "!=", "=="), ("orZero", "0", "1"), ("len", "!=", "==")]
+    assert kotlin[13:] == [("orZero", " ?: 0", "!!"), ("orZero", "0", "1")]
+
+
+def test_annotation_arguments_have_no_sites():
+    kotlin = """@file:Suppress("X", level = 1)
+package demo
+@Retry(times = 1, enabled = true)
+fun g(@Max(1) x: Int): Int {
+    return 2
+}
+"""
+    java = """class A {
+  @Retry(times = 1, enabled = true)
+  int g(@Max(1) int x) { return x > 0 ? 1 : 0; }
+}
+"""
+    assert discover_raw(kotlin, "kotlin", "G.kt") == []
+    java_sites = [(site.original, site.mutant) for site in discover_raw(java, "java", "A.java")]
+    assert java_sites == [(">", ">="), ("0", "1"), ("1", "0"), ("0", "1")]

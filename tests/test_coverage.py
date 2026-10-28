@@ -24,6 +24,74 @@ def test_jacoco_marks_lines_with_covered_instructions(tmp_path):
     assert covered_lines(tmp_path, source, "java") == {3, 5}
 
 
+def test_jacoco_reads_a_gradle_report_in_a_subproject(tmp_path):
+    report = tmp_path / "app" / "build" / "reports" / "jacoco" / "test" / "jacocoTestReport.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """<?xml version="1.0"?>
+<report name="demo">
+  <package name="demo">
+    <sourcefile name="A.java">
+      <line nr="4" mi="0" ci="3" mb="1" cb="1"/>
+      <line nr="5" mi="2" ci="0" mb="0" cb="0"/>
+    </sourcefile>
+  </package>
+</report>
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "app" / "src" / "main" / "java" / "demo" / "A.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("package demo;\nclass A {}\n", encoding="utf-8")
+    assert covered_lines(tmp_path, source, "java") == {4}
+
+
+def test_jacoco_covers_kotlin_files(tmp_path):
+    report = tmp_path / "build" / "reports" / "jacoco" / "test" / "jacocoTestReport.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """<?xml version="1.0"?>
+<report name="demo">
+  <package name="demo">
+    <sourcefile name="Calc.kt">
+      <line nr="5" mi="0" ci="3" mb="1" cb="1"/>
+      <line nr="6" mi="0" ci="2" mb="0" cb="0"/>
+      <line nr="7" mi="2" ci="0" mb="0" cb="0"/>
+      <line nr="14" mi="0" ci="1" mb="0" cb="0"/>
+    </sourcefile>
+  </package>
+</report>
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "main" / "kotlin" / "demo" / "Calc.kt"
+    source.parent.mkdir(parents=True)
+    source.write_text("package demo\n", encoding="utf-8")
+    assert covered_lines(tmp_path, source, "kotlin") == {5, 6, 14}
+
+
+def test_jacoco_finds_a_kotlin_file_outside_its_package_directory(tmp_path):
+    report = tmp_path / "build" / "reports" / "jacoco" / "test" / "jacocoTestReport.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """<?xml version="1.0"?>
+<report name="demo">
+  <package name="com/acme/demo">
+    <sourcefile name="Calc.kt"><line nr="4" mi="0" ci="1" mb="0" cb="0"/></sourcefile>
+  </package>
+</report>
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "main" / "kotlin" / "Calc.kt"
+    source.parent.mkdir(parents=True)
+    source.write_text("@file:JvmName(\"Calc\")\n\npackage com.acme.demo\n", encoding="utf-8")
+    assert covered_lines(tmp_path, source, "kotlin") == {4}
+    other = tmp_path / "src" / "main" / "kotlin" / "Other.kt"
+    other.write_text("package com.acme.demo\n", encoding="utf-8")
+    assert covered_lines(tmp_path, other, "kotlin") is None
+
+
 def test_go_profile_marks_hit_lines(tmp_path):
     profile = tmp_path / "target" / "coverage" / "go" / "coverage.out"
     profile.parent.mkdir(parents=True)
