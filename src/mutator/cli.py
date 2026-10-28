@@ -54,8 +54,8 @@ def _skipped_directory_text() -> str:
 HELP = f"""\
 Usage: mutator [options] [path-or-filter ...]
 
-Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, and Python,
-run the project's tests against each one, and write `.metrics/mutate` for
+Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, Python,
+and Dart, run the project's tests against each one, and write `.metrics/mutate` for
 uml-viewer. Namespaces and function names are the ones crapper writes into
 `.metrics/crap.edn`.
 
@@ -129,6 +129,7 @@ Coverage, when it is produced, uses the same commands as crapper:
   TypeScript   npm run coverage, Vitest, or c8
   Rust         cargo llvm-cov or cargo tarpaulin
   Python       coverage.py LCOV
+  Dart         flutter test --coverage, or dart test --coverage-path
 
 A site on a line the report does not mark as hit is uncovered and is not run.
 """

@@ -1,8 +1,8 @@
 # mutator
 
-Mutation testing for Clojure, Java, Go, TypeScript, Rust, and Python. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
+Mutation testing for Clojure, Java, Go, TypeScript, Rust, Python, and Dart. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
 
-Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, and Python use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
+Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, Python, and Dart use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
 
 A mutant is killed when the tests fail or time out. It survives when the tests still pass. A site on a line the coverage report does not hit is uncovered and is not run. The score uml-viewer paints is killed / (killed + survived).
 
@@ -83,8 +83,9 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
 | Rust | `crate::module`, or `crate::module::Type` | the function or method name |
 | Python | the dotted module path, or `module.Class` | the function or method name |
+| Dart | the package name plus the path under `lib/`, or `module.Type` | the function or method name; `size` / `size=` for a getter / setter, `operator +`, a factory's name |
 
-`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, or a TypeScript `private` / `#` name uses `defn-/`.
+`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python or Dart name that starts with `_`, a Rust function that is not `pub`, or a TypeScript `private` / `#` name uses `defn-/`.
 
 ## What each language mutates
 
@@ -98,6 +99,7 @@ Tokens inside strings, comments, and quoted Clojure forms are left alone. A repl
 | TypeScript | the Java set, plus `===`/`!==`, `??` to `||`, and `?.` to `.`. A call or index drops `?.` (`a?.()` becomes `a()`). `.js`, `.jsx`, `.mjs`, and `.cjs` use these rules. |
 | Rust | the Java set (`&&`/`||`, `!`, unary `-`). |
 | Python | the Java set, spelled `and`/`or`, `not`, and `True`/`False`. |
+| Dart | the Java set. Null safety (`?.`, `??`, the `x!` assertion), `%`, `~/`, `is`, and `as` are left alone. Types, annotations, and string text are skipped; code inside `${}` is mutated. Generative constructors are not entries; factory constructors are, matching crapper. |
 
 ## Tests and coverage
 
@@ -111,6 +113,9 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
+| Dart | `flutter test` when `pubspec.yaml` depends on `sdk: flutter`, otherwise `dart test` | nearest `pubspec.yaml` |
+
+Dart coverage is LCOV from `flutter test --coverage` or `dart test --coverage-path`, read the way crapper reads it, including each package's `coverage/lcov.info`. The Dart VM records a function's first line and its calls, not every statement: `return 1;` usually has no hit count. A line with no record takes the hit of the closest recorded line above it, so a mutant inside a function that ran is run. A branch that never ran in a function that did is run too and survives; read Dart survivors with that in mind. Each mutant reruns the package's tests, and a Flutter test run takes seconds even for a small package, so start with one file. `flutter` must be on `PATH`; when it is not, the baseline fails and no mutant runs.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 

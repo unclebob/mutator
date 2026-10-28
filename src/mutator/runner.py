@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from mutator.crapper_link import ensure_crapper
+
 Command = str | list[str]
 
 
@@ -222,6 +224,12 @@ def _python_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return _python_command(directory), directory
 
 
+def _dart_plan(root: Path, source: Path) -> tuple[Command, Path]:
+    directory = _nearest_marker(source, root, ("pubspec.yaml",))
+    flutter = ensure_crapper().dart_coverage.is_flutter(directory)
+    return ["flutter" if flutter else "dart", "test"], directory
+
+
 _PLANS = {
     "clojure": _clojure_plan,
     "java": _java_plan,
@@ -229,6 +237,7 @@ _PLANS = {
     "typescript": _typescript_plan,
     "rust": _rust_plan,
     "python": _python_plan,
+    "dart": _dart_plan,
 }
 
 

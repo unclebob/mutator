@@ -28,6 +28,7 @@ def ensure_crapper():
         sys.path.insert(0, str(sibling))
         import crapper
     import crapper.coverage
+    import crapper.dart_coverage
     import crapper.discover
     import crapper.languages
     import crapper.languages.treesitter
