@@ -2,9 +2,7 @@
 
 Each worker is a directory under target/mutation-workers. Project files are
 linked in. The file under test is a private copy, so workers can mutate it at
-the same time without touching the original tree. Files that would find the
-original tree through a link are copied too: Node importers of the file, and
-Composer's autoloader for a PHP file. The overlay is removed when
+the same time without touching the original tree. The overlay is removed when
 the file's mutants finish.
 """
 
@@ -275,12 +273,7 @@ def _composer_package(root: Path, relative: str) -> Path | None:
 
 
 def composer_files(root: Path, relative: str) -> set[str]:
-    """Composer's autoloader, its `vendor/bin` proxies, and the PHPUnit config.
-
-    PHP resolves symlinks in `__DIR__`, and Composer finds the project from
-    `dirname(__DIR__)`, so a linked autoloader loads the original source. A
-    linked PHPUnit config points at the original `vendor/` too.
-    """
+    """Files a worker copies so `dirname(__DIR__)` resolves inside the worker."""
 
     package = _composer_package(root, relative)
     if package is None:

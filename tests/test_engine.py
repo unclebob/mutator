@@ -257,8 +257,6 @@ def test_node_imports_the_worker_copy_through_a_relative_specifier(tmp_path):
     assert source.read_text(encoding="utf-8") == 'export const value = "real"\n'
 
 
-# Composer's generated files find the project from their own directory, and
-# PHP resolves symlinks in __DIR__. These are the shapes Composer writes.
 COMPOSER_FILES = {
     "composer.json": '{"autoload": {"psr-4": {"App\\\\": "app/"}}}\n',
     "phpunit.xml": "<phpunit/>\n",
