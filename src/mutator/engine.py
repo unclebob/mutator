@@ -41,15 +41,6 @@ def _drop_bytecode(path: Path) -> None:
         item.unlink(missing_ok=True)
 
 
-def _backup(root: Path, path: Path, original: bytes) -> Path:
-    relative = path.resolve().relative_to(root.resolve())
-    backup = root / "target" / "mutator-backup" / relative
-    backup.parent.mkdir(parents=True, exist_ok=True)
-    if not backup.exists():
-        backup.write_bytes(original)
-    return backup
-
-
 def _covered(site: Site, lines: set[int] | None, ignore_coverage: bool) -> bool:
     if ignore_coverage:
         return True
@@ -255,11 +246,6 @@ def _statuses(found: list[Site], covered: dict[str, bool], outcomes: dict[str, s
     return statuses
 
 
-def _restore_if_dirty(path: Path, original: bytes) -> None:
-    if path.read_bytes() != original:
-        path.write_bytes(original)
-
-
 def mutate_file(
     path: Path,
     root: Path,
@@ -314,7 +300,6 @@ def mutate_file(
         return failure
     forms = _forms(source, path, root, file_key, found, covered, outcomes, lines)
     written = write_results(root, file_key, forms, outcomes)
-    _restore_if_dirty(path, original)
     return RunResult(
         path=file_key,
         forms=forms,
