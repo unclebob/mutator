@@ -2,7 +2,9 @@
 
 Each worker is a directory under target/mutation-workers. Project files are
 linked in. The file under test is a private copy, so workers can mutate it at
-the same time without touching the original tree. The overlay is removed when
+the same time without touching the original tree. Files that would find the
+original tree through a link are copied too: Node importers of the file, and
+Composer's autoloader for a PHP file. The overlay is removed when
 the file's mutants finish.
 """
 
@@ -10,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +45,8 @@ SKIP_LINK = frozenset(
         ".mypy_cache",
         ".clj-kondo",
         ".gradle",
+        ".phpunit.cache",
+        ".phpunit.result.cache",
     }
 )
 
@@ -253,6 +258,44 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
     elif destination.exists():
         return
     destination.write_bytes((root / relative).read_bytes())
+    shutil.copymode(root / relative, destination)
+
+
+_PHPUNIT_CONFIGS = ("phpunit.xml", "phpunit.xml.dist", "phpunit.dist.xml")
+
+
+def _composer_package(root: Path, relative: str) -> Path | None:
+    current = (root / relative).parent
+    while True:
+        if (current / "composer.json").is_file():
+            return current
+        if current == root or current.parent == current:
+            return None
+        current = current.parent
+
+
+def composer_files(root: Path, relative: str) -> set[str]:
+    """Composer's autoloader, its `vendor/bin` proxies, and the PHPUnit config.
+
+    PHP resolves symlinks in `__DIR__`, and Composer finds the project from
+    `dirname(__DIR__)`. Linked, they would load the original source instead of
+    the mutant. A linked PHPUnit config would point at the original vendor too.
+    """
+
+    package = _composer_package(root, relative)
+    if package is None:
+        return set()
+    vendor = package / "vendor"
+    paths = [package / name for name in _PHPUNIT_CONFIGS]
+    paths.append(vendor / "autoload.php")
+    for directory in (vendor / "composer", vendor / "bin"):
+        if directory.is_dir():
+            paths.extend(directory.rglob("*"))
+    return {
+        path.relative_to(root).as_posix()
+        for path in paths
+        if path.is_file()
+    }
 
 
 def _overlay(worker: Path, root: Path, relative: str, original: bytes) -> None:
@@ -273,6 +316,8 @@ def create_workers(
     created = []
     first = relative.split("/", 1)[0]
     importers = importers_of(root, relative)
+    if relative.endswith(".php"):
+        importers |= composer_files(root, relative)
     for index in range(count):
         worker = base / f"worker-{index}"
         worker.mkdir(parents=True, exist_ok=True)
