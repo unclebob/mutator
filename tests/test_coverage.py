@@ -1,4 +1,4 @@
-from mutator.coverage import covered_lines
+from mutator.coverage import _package_owns_report, covered_lines
 
 
 def test_jacoco_marks_lines_with_covered_instructions(tmp_path):
@@ -98,18 +98,54 @@ def test_go_profile_does_not_cross_files(tmp_path):
     assert covered_lines(tmp_path, long, "go") == {2}
 
 
+def _write_hpc(tmp_path, package, module, covered_line=2):
+    markup = (
+        tmp_path
+        / "dist-newstyle/build/x/demo/t/spec/hpc/vanilla/html"
+        / f"{package}-inplace"
+        / f"{module}.hs.html"
+    )
+    markup.parent.mkdir(parents=True, exist_ok=True)
+    markup.write_text(
+        f'<span class="lineno">    {covered_line} </span>'
+        '<span class="istickedoff">choose = 1</span>\n'
+        '<span class="lineno">    3 </span>'
+        '<span class="nottickedoff">missing = 0</span>\n',
+        encoding="utf-8",
+    )
+
+
 def test_haskell_coverage_uses_hpc_markup(tmp_path):
     source = tmp_path / "src" / "Demo.hs"
     source.parent.mkdir(parents=True)
     source.write_text("module Demo where\nchoose = 1\n", encoding="utf-8")
-    markup = (
-        tmp_path
-        / "dist-newstyle/build/x/demo/t/spec/hpc/vanilla/html/demo-inplace/Demo.hs.html"
-    )
-    markup.parent.mkdir(parents=True)
-    markup.write_text(
-        '<span class="lineno">    2 </span><span class="istickedoff">choose = 1</span>\n'
-        '<span class="lineno">    3 </span><span class="nottickedoff">missing = 0</span>\n',
+    _write_hpc(tmp_path, "demo", "Demo")
+    assert covered_lines(tmp_path, source, "haskell") == {2}
+
+
+def test_haskell_coverage_maps_hierarchical_dotted_modules(tmp_path):
+    source = tmp_path / "hbs2-peer/lib/HBS2/Peer/RepositoryLease/Worker.hs"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "module HBS2.Peer.RepositoryLease.Worker where\nchoose = 1\n",
         encoding="utf-8",
     )
+    _write_hpc(tmp_path, "hbs2-peer-0.26.0.3", "HBS2.Peer.RepositoryLease.Worker")
     assert covered_lines(tmp_path, source, "haskell") == {2}
+
+
+def test_haskell_coverage_uses_package_and_refuses_ambiguity(tmp_path):
+    alpha = tmp_path / "alpha/lib/Shared/Store.hs"
+    beta = tmp_path / "beta/lib/Shared/Store.hs"
+    gamma = tmp_path / "gamma/lib/Shared/Store.hs"
+    for source in (alpha, beta, gamma):
+        source.parent.mkdir(parents=True)
+        source.write_text("module Shared.Store where\nchoose = 1\n", encoding="utf-8")
+    _write_hpc(tmp_path, "alpha-1.0-inplace", "Shared.Store", covered_line=2)
+    _write_hpc(tmp_path, "beta-1.0-inplace", "Shared.Store", covered_line=4)
+    assert covered_lines(tmp_path, beta, "haskell") == {4}
+    assert covered_lines(tmp_path, gamma, "haskell") is None
+
+
+def test_empty_hpc_report_key_belongs_to_no_package():
+    assert not _package_owns_report("demo", "")
