@@ -3,10 +3,12 @@ import shutil
 import subprocess
 import threading
 
+import pytest
+
 from mutator.engine import mutate_file, restore_backups
 from mutator.edn import loads
 from mutator.metrics import snapshot_path
-from mutator.runner import CommandResult
+from mutator.runner import CommandResult, CommandRunner
 from mutator.workers import create_workers, delete_tree, new_run_dir, worker_count
 
 
@@ -253,6 +255,122 @@ def test_node_imports_the_worker_copy_through_a_relative_specifier(tmp_path):
     assert beside.read_text(encoding="utf-8").startswith("import")
     assert distant.read_text(encoding="utf-8").startswith("import")
     assert source.read_text(encoding="utf-8") == 'export const value = "real"\n'
+
+
+COMPOSER_FILES = {
+    "composer.json": '{"autoload": {"psr-4": {"App\\\\": "app/"}}}\n',
+    "phpunit.xml": "<phpunit/>\n",
+    "vendor/autoload.php": "<?php\nrequire_once __DIR__ . '/composer/autoload_real.php';\n",
+    "vendor/composer/autoload_psr4.php": (
+        "<?php\n"
+        "$vendorDir = dirname(__DIR__);\n"
+        "$baseDir = dirname($vendorDir);\n"
+        "return array('App\\\\' => array($baseDir . '/app'));\n"
+    ),
+    "vendor/composer/autoload_real.php": (
+        "<?php\n"
+        "foreach (require __DIR__ . '/autoload_psr4.php' as $prefix => $dirs) {\n"
+        "    spl_autoload_register(function ($class) use ($prefix, $dirs) {\n"
+        "        if (strncmp($class, $prefix, strlen($prefix)) === 0) {\n"
+        "            require $dirs[0] . '/' . str_replace('\\\\', '/', substr($class, strlen($prefix))) . '.php';\n"
+        "        }\n"
+        "    });\n"
+        "}\n"
+    ),
+    "vendor/bin/phpunit": (
+        "#!/usr/bin/env php\n"
+        "<?php\n"
+        "$GLOBALS['_composer_autoload_path'] = __DIR__ . '/..'.'/autoload.php';\n"
+        "include __DIR__ . '/..'.'/phpunit/phpunit/phpunit';\n"
+    ),
+    "vendor/phpunit/phpunit/phpunit": (
+        "<?php\n"
+        "require $GLOBALS['_composer_autoload_path'];\n"
+        "exit(require getcwd() . '/tests/BoardTest.php');\n"
+    ),
+    "tests/BoardTest.php": (
+        "<?php\n"
+        "use App\\Board;\n"
+        "return Board::positive(1) === true && Board::positive(0) === false ? 0 : 1;\n"
+    ),
+    "app/Board.php": (
+        "<?php\n"
+        "namespace App;\n"
+        "\n"
+        "class Board\n"
+        "{\n"
+        "    public static function positive($x)\n"
+        "    {\n"
+        "        return $x > 0;\n"
+        "    }\n"
+        "\n"
+        "    public static function label()\n"
+        "    {\n"
+        "        return 1;\n"
+        "    }\n"
+        "}\n"
+    ),
+}
+
+
+def _composer_project(root):
+    for relative, text in COMPOSER_FILES.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    (root / "vendor" / "bin" / "phpunit").chmod(0o755)
+    return root / "app" / "Board.php"
+
+
+def test_composer_autoload_files_are_real_files_in_the_worker(tmp_path):
+    source = _composer_project(tmp_path)
+    (tmp_path / ".phpunit.cache").mkdir()
+    base = new_run_dir(tmp_path)
+    try:
+        worker = create_workers(base, tmp_path, "app/Board.php", source.read_bytes(), 1)[0]
+        for relative in (
+            "phpunit.xml",
+            "vendor/autoload.php",
+            "vendor/composer/autoload_psr4.php",
+            "vendor/composer/autoload_real.php",
+            "vendor/bin/phpunit",
+        ):
+            parts = (worker / relative).relative_to(worker).parts
+            for index in range(1, len(parts) + 1):
+                assert not worker.joinpath(*parts[:index]).is_symlink(), relative
+        assert os.access(worker / "vendor" / "bin" / "phpunit", os.X_OK)
+        assert (worker / "vendor" / "phpunit").is_symlink()
+        assert (worker / "tests").is_symlink()
+        assert not (worker / ".phpunit.cache").exists()
+    finally:
+        delete_tree(base)
+    assert (tmp_path / "vendor" / "composer" / "autoload_real.php").is_file()
+
+
+@pytest.mark.skipif(shutil.which("php") is None, reason="php is not installed")
+def test_a_php_mutant_is_killed_through_the_composer_autoloader(tmp_path):
+    source = _composer_project(tmp_path)
+    original = source.read_bytes()
+    result = mutate_file(
+        source,
+        tmp_path,
+        runner=CommandRunner(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command=None,
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        max_workers=2,
+    )
+    assert result.baseline_failed is False
+    assert {(form.name, form.killed, form.survived) for form in result.forms} == {
+        ("positive", 2, 0),
+        ("label", 0, 1),
+    }
+    assert source.read_bytes() == original
 
 
 def test_a_mutation_run_leaves_the_project_tree_unchanged(tmp_path):

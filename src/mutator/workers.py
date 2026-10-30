@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -42,6 +43,8 @@ SKIP_LINK = frozenset(
         ".mypy_cache",
         ".clj-kondo",
         ".gradle",
+        ".phpunit.cache",
+        ".phpunit.result.cache",
     }
 )
 
@@ -253,6 +256,39 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
     elif destination.exists():
         return
     destination.write_bytes((root / relative).read_bytes())
+    shutil.copymode(root / relative, destination)
+
+
+_PHPUNIT_CONFIGS = ("phpunit.xml", "phpunit.xml.dist", "phpunit.dist.xml")
+
+
+def _composer_package(root: Path, relative: str) -> Path | None:
+    current = (root / relative).parent
+    while True:
+        if (current / "composer.json").is_file():
+            return current
+        if current == root or current.parent == current:
+            return None
+        current = current.parent
+
+
+def composer_files(root: Path, relative: str) -> set[str]:
+    """Files a worker copies so `dirname(__DIR__)` resolves inside the worker."""
+
+    package = _composer_package(root, relative)
+    if package is None:
+        return set()
+    vendor = package / "vendor"
+    paths = [package / name for name in _PHPUNIT_CONFIGS]
+    paths.append(vendor / "autoload.php")
+    for directory in (vendor / "composer", vendor / "bin"):
+        if directory.is_dir():
+            paths.extend(directory.rglob("*"))
+    return {
+        path.relative_to(root).as_posix()
+        for path in paths
+        if path.is_file()
+    }
 
 
 def _overlay(worker: Path, root: Path, relative: str, original: bytes) -> None:
@@ -273,6 +309,8 @@ def create_workers(
     created = []
     first = relative.split("/", 1)[0]
     importers = importers_of(root, relative)
+    if relative.endswith(".php"):
+        importers |= composer_files(root, relative)
     for index in range(count):
         worker = base / f"worker-{index}"
         worker.mkdir(parents=True, exist_ok=True)

@@ -96,3 +96,23 @@ def test_go_profile_does_not_cross_files(tmp_path):
     profile.write_text("mode: set\na/b/widget.go:2.1,2.2 1 1\n", encoding="utf-8")
     assert covered_lines(tmp_path, short, "go") is None
     assert covered_lines(tmp_path, long, "go") == {2}
+
+
+def test_clover_marks_statement_and_one_line_method_hits(tmp_path):
+    source = tmp_path / "app" / "Board.php"
+    source.parent.mkdir(parents=True)
+    source.write_text("<?php\n", encoding="utf-8")
+    report = tmp_path / "target" / "coverage" / "php" / "clover.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        f'<coverage><project><file name="{source.resolve()}">'
+        '<line num="4" type="method" name="place" count="1"/>'
+        '<line num="6" type="stmt" count="2"/>'
+        '<line num="7" type="stmt" count="0"/>'
+        '<line num="9" type="method" name="id" count="1"/>'
+        '<line num="10" type="method" name="name" count="0"/>'
+        "</file></project></coverage>",
+        encoding="utf-8",
+    )
+    assert covered_lines(tmp_path, source, "php") == {4, 6, 9}
+    assert covered_lines(tmp_path, tmp_path / "app" / "Other.php", "php") is None

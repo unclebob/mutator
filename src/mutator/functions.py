@@ -46,6 +46,12 @@ def _typescript_private(name: str, header: str) -> bool:
     return name.startswith("#") or bool(re.search(r"\bprivate\b", header))
 
 
+def _php_private(header: str) -> bool:
+    """`private` before `function`. A promoted `private` parameter comes after it."""
+
+    return bool(re.search(r"\bprivate\b", header.split("function", 1)[0]))
+
+
 def is_private(language: str, name: str, source: str, start: int, end: int) -> bool:
     """True when uml-viewer should treat the operation as private."""
 
@@ -62,6 +68,8 @@ def is_private(language: str, name: str, source: str, start: int, end: int) -> b
         return re.match(r"pub\s", header) is None
     if language == "typescript":
         return _typescript_private(name, header)
+    if language == "php":
+        return _php_private(header)
     return False
 
 

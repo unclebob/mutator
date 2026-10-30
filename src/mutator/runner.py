@@ -212,6 +212,17 @@ def _typescript_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return ["npm", "test"], directory
 
 
+def _php_plan(root: Path, source: Path) -> tuple[Command, Path]:
+    """Relative to the package, so a mutant runs the worker's own `vendor/bin`."""
+
+    directory = _nearest_marker(source, root, ("composer.json",))
+    # With pcov or Xdebug loaded, a test run also writes the coverage reports
+    # phpunit.xml configures. They are not needed, and a large one can fail the run.
+    if (directory / "vendor" / "bin" / "pest").is_file():
+        return ["vendor/bin/pest", "--no-coverage"], directory
+    return ["vendor/bin/phpunit", "--no-coverage"], directory
+
+
 def _rust_plan(root: Path, source: Path) -> tuple[Command, Path]:
     directory = _nearest_marker(source, root, ("Cargo.toml",))
     return ["cargo", "test"], directory
@@ -229,6 +240,7 @@ _PLANS = {
     "typescript": _typescript_plan,
     "rust": _rust_plan,
     "python": _python_plan,
+    "php": _php_plan,
 }
 
 

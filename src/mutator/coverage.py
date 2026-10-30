@@ -1,7 +1,8 @@
 """Decide which lines the tests already exercise.
 
 Java uses JaCoCo source lines. Go uses statement profiles. Clojure prefers
-Cloverage's per-line form counts, then LCOV. The other languages use LCOV.
+Cloverage's per-line form counts, then LCOV. PHP uses Clover statement and
+method lines. The other languages use LCOV.
 A file that does not appear in a report has no coverage data.
 """
 
@@ -209,6 +210,14 @@ def _go_lines(profile, source_path: str) -> set[int] | None:
     return covered
 
 
+def _clover_lines(record) -> set[int] | None:
+    """A one-line method has only its method line, so both kinds count."""
+
+    if record is None:
+        return None
+    return _covered_from_pairs(record) | _covered_from_pairs(record.methods)
+
+
 def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | None:
     """Lines with a hit, or None when this file is absent from coverage."""
 
@@ -219,6 +228,8 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
     bundle = crapper.coverage.load_bundle(root)
     if language == "go":
         return _go_lines(bundle.go_profile, path)
+    if language == "php":
+        return _clover_lines(_lookup(bundle.clover, path))
     if language == "clojure":
         html = _covered_from_pairs(_lookup(bundle.form_html, path))
         if html is not None:
