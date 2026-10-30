@@ -278,8 +278,8 @@ def composer_files(root: Path, relative: str) -> set[str]:
     """Composer's autoloader, its `vendor/bin` proxies, and the PHPUnit config.
 
     PHP resolves symlinks in `__DIR__`, and Composer finds the project from
-    `dirname(__DIR__)`. Linked, they would load the original source instead of
-    the mutant. A linked PHPUnit config would point at the original vendor too.
+    `dirname(__DIR__)`, so a linked autoloader loads the original source. A
+    linked PHPUnit config points at the original `vendor/` too.
     """
 
     package = _composer_package(root, relative)
