@@ -113,7 +113,7 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
-| PHP | `vendor/bin/pest`, or `vendor/bin/phpunit` | nearest `composer.json` |
+| PHP | `vendor/bin/pest --no-coverage`, or `vendor/bin/phpunit --no-coverage` | nearest `composer.json` |
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
