@@ -234,3 +234,49 @@ def test_a_site_remembers_where_its_statement_starts(tmp_path):
     assert (4, "+", 2) in anchors
     assert (4, "1", 2) in anchors
     assert (7, "true", 6) in anchors
+
+
+def test_php_uses_the_java_decisions(tmp_path):
+    source = """<?php
+namespace App\\Survey;
+
+class Board
+{
+    public function __construct(private bool $ready = TRUE) {}
+
+    public function place($x)
+    {
+        if ($x > 0 && $this->ready || $x === 1 and false) {
+            return $x + 1;
+        }
+        return !$this->ok ? -$x : ($x ?? 0);
+    }
+
+    private function hide()
+    {
+        return True;
+    }
+}
+"""
+    sites = _sites(tmp_path, "app/Survey/Board.php", source)
+    public = {(site.original, site.mutant) for site in sites if site.form_id == "defn/place"}
+    for pair in [
+        (">", ">="),
+        ("&&", "||"),
+        ("||", "&&"),
+        ("===", "!=="),
+        ("and", "or"),
+        ("false", "true"),
+        ("+", "-"),
+        ("1", "0"),
+        ("!", ""),
+        ("-", ""),
+        ("??", "||"),
+        ("0", "1"),
+    ]:
+        assert pair in public, pair
+    assert {(site.form_id, site.original, site.mutant) for site in sites if site.name != "place"} == {
+        ("defn/__construct", "TRUE", "FALSE"),
+        ("defn-/hide", "True", "False"),
+    }
+    assert {site.namespace for site in sites} == {"App.Survey.Board"}

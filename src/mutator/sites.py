@@ -1,10 +1,11 @@
 """Find mutation sites.
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
-one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, and Python
-use the same decisions as Java, spelled in that language. TypeScript also
+one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, Python, and
+PHP use the same decisions as Java, spelled in that language. TypeScript also
 mutates `??` to `||` and `?.` to `.` (removed on a call or index). JavaScript
-files use the TypeScript rules.
+files use the TypeScript rules. PHP also mutates `??` to `||`, and flips
+`TRUE` / `false` in the case it is written in.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ _BINARY_PARENTS = {
     "boolean_operator",
 }
 
-_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator"}
+_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator", "unary_op_expression"}
 
 _BOOLEANS = {"true": "false", "false": "true", "True": "False", "False": "True"}
 
@@ -137,7 +138,7 @@ def _category(token: str) -> str:
 def _binary_mutant(language: str, token: str) -> str | None:
     if language == "go" and token == "/":
         return None
-    if token == "??" and language != "typescript":
+    if token == "??" and language not in {"typescript", "php"}:
         return None
     return _BINARY.get(token)
 
@@ -310,6 +311,27 @@ def _visit_boolean_token(node, token: str, found: list[RawSite]) -> None:
         _add(found, node, token, _BOOLEANS[token], "boolean")
 
 
+def _php_boolean(token: str) -> str | None:
+    """PHP's `true` is case-insensitive. The mutant keeps the spelling's case."""
+
+    flipped = {"true": "false", "false": "true"}.get(token.lower())
+    if flipped is None:
+        return None
+    if token.isupper():
+        return flipped.upper()
+    if token[0].isupper():
+        return flipped.capitalize()
+    return flipped
+
+
+def _visit_php_boolean(node, token: str, found: list[RawSite]) -> None:
+    if node.type != "boolean":
+        return
+    mutant = _php_boolean(token)
+    if mutant is not None:
+        _add(found, node, token, mutant, "boolean")
+
+
 def _visit_constant(node, token: str, found: list[RawSite]) -> None:
     if node.type in _NUMBERS and token in {"0", "1"}:
         _add(found, node, token, _flip01(token), "constant")
@@ -333,6 +355,7 @@ def _visit_leaf(node, data: bytes, language: str, found: list[RawSite]) -> None:
     _visit_not(node, token, parent, found)
     _visit_negation(node, token, parent, found)
     _visit_boolean_token(node, token, found)
+    _visit_php_boolean(node, token, found)
     _visit_constant(node, token, found)
 
 

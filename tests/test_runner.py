@@ -153,3 +153,16 @@ def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     result = CommandRunner().run(command, worker, 5)
     assert result.code == 0
     assert result.output.strip() == "worker"
+
+
+def test_php_runs_pest_or_phpunit_from_the_composer_package(tmp_path):
+    package = tmp_path / "api"
+    source = package / "app" / "Board.php"
+    source.parent.mkdir(parents=True)
+    source.write_text("<?php\n", encoding="utf-8")
+    (package / "composer.json").write_text("{}\n", encoding="utf-8")
+    (package / "vendor" / "bin").mkdir(parents=True)
+    (package / "vendor" / "bin" / "phpunit").write_text("", encoding="utf-8")
+    assert plan_command(tmp_path, source, "php", None) == (["vendor/bin/phpunit"], package.resolve())
+    (package / "vendor" / "bin" / "pest").write_text("", encoding="utf-8")
+    assert plan_command(tmp_path, source, "php", None) == (["vendor/bin/pest"], package.resolve())

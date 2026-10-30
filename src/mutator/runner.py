@@ -212,6 +212,15 @@ def _typescript_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return ["npm", "test"], directory
 
 
+def _php_plan(root: Path, source: Path) -> tuple[Command, Path]:
+    """Relative to the package, so a mutant runs the worker's own `vendor/bin`."""
+
+    directory = _nearest_marker(source, root, ("composer.json",))
+    if (directory / "vendor" / "bin" / "pest").is_file():
+        return ["vendor/bin/pest"], directory
+    return ["vendor/bin/phpunit"], directory
+
+
 def _rust_plan(root: Path, source: Path) -> tuple[Command, Path]:
     directory = _nearest_marker(source, root, ("Cargo.toml",))
     return ["cargo", "test"], directory
@@ -229,6 +238,7 @@ _PLANS = {
     "typescript": _typescript_plan,
     "rust": _rust_plan,
     "python": _python_plan,
+    "php": _php_plan,
 }
 
 
