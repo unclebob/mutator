@@ -89,6 +89,65 @@ def test_mutants_are_killed_or_kept_and_the_snapshot_is_differential(tmp_path):
     assert runner.calls - first_calls == 4
 
 
+def test_a_moved_function_keeps_each_mutant_its_own_outcome(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    pair = "def pair(a, b, c, d):\n    return a > b, c > d\n"
+    path.write_text(pair, encoding="utf-8")
+
+    class SecondOnly:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            namespace: dict = {}
+            exec((cwd / "src" / "demo.py").read_text(encoding="utf-8"), namespace)
+            ok = namespace["pair"](0, 0, 1, 1)[1] is False
+            return CommandResult(code=0 if ok else 1, timed_out=False, seconds=0.01, output="")
+
+    def run():
+        return mutate_file(
+            path,
+            tmp_path,
+            runner=SecondOnly(),
+            covered_lines=None,
+            ignore_coverage=True,
+            mutate_all=False,
+            lines=None,
+            test_command="fake",
+            timeout_factor=10,
+            mutation_warning=50,
+            baselines={},
+        ).forms[0]
+
+    first = run()
+    assert (first.killed, first.survived) == (1, 1)
+    # Seven bytes above the function, the gap between its two `>`, move the
+    # first `>` to where the second one was.
+    path.write_text("# abcd\n" + pair, encoding="utf-8")
+    moved = run()
+    assert (moved.killed, moved.survived) == (1, 1)
+
+
+def test_functions_of_one_form_id_keep_their_mutants_apart(tmp_path):
+    from mutator.functions import sites_in_file
+
+    source = (
+        "class Box:\n"
+        "    @property\n"
+        "    def size(self):\n"
+        "        return self.n > 0\n"
+        "\n"
+        "    @size.setter\n"
+        "    def size(self):\n"
+        "        return self.n > 0\n"
+    )
+    path = tmp_path / "demo.py"
+    path.write_text(source, encoding="utf-8")
+    sites = sites_in_file(source, path, tmp_path, "demo.py")
+    assert {site.form_id for site in sites} == {"defn/size"}
+    assert len({site.mutation_id for site in sites}) == len(sites) == 4
+
+
 def test_uncovered_sites_are_not_executed(tmp_path):
     path = tmp_path / "src" / "demo.py"
     path.parent.mkdir()
