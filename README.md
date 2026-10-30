@@ -83,7 +83,7 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
 | Rust | `crate::module`, or `crate::module::Type` | the function or method name |
 | Python | the dotted module path, or `module.Class` | the function or method name |
-| PHP | the namespace with dots (`App.Foo`), or `App.Foo.Class` | the function or method name |
+| PHP | the namespace (`App\Foo`), or `App\Foo\Class` | the function or method name |
 
 `defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, a TypeScript `private` / `#` name, or a PHP `private` method uses `defn-/`.
 

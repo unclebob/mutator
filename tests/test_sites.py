@@ -279,4 +279,4 @@ class Bar
         ("defn/__construct", "TRUE", "FALSE"),
         ("defn-/hide", "True", "False"),
     }
-    assert {site.namespace for site in sites} == {"App.Foo.Bar"}
+    assert {site.namespace for site in sites} == {"App\\Foo\\Bar"}
