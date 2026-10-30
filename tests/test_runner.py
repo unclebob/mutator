@@ -163,6 +163,6 @@ def test_php_runs_pest_or_phpunit_from_the_composer_package(tmp_path):
     (package / "composer.json").write_text("{}\n", encoding="utf-8")
     (package / "vendor" / "bin").mkdir(parents=True)
     (package / "vendor" / "bin" / "phpunit").write_text("", encoding="utf-8")
-    assert plan_command(tmp_path, source, "php", None) == (["vendor/bin/phpunit"], package.resolve())
+    assert plan_command(tmp_path, source, "php", None) == (["vendor/bin/phpunit", "--no-coverage"], package.resolve())
     (package / "vendor" / "bin" / "pest").write_text("", encoding="utf-8")
-    assert plan_command(tmp_path, source, "php", None) == (["vendor/bin/pest"], package.resolve())
+    assert plan_command(tmp_path, source, "php", None) == (["vendor/bin/pest", "--no-coverage"], package.resolve())
