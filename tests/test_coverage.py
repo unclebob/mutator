@@ -96,3 +96,20 @@ def test_go_profile_does_not_cross_files(tmp_path):
     profile.write_text("mode: set\na/b/widget.go:2.1,2.2 1 1\n", encoding="utf-8")
     assert covered_lines(tmp_path, short, "go") is None
     assert covered_lines(tmp_path, long, "go") == {2}
+
+
+def test_haskell_coverage_uses_hpc_markup(tmp_path):
+    source = tmp_path / "src" / "Demo.hs"
+    source.parent.mkdir(parents=True)
+    source.write_text("module Demo where\nchoose = 1\n", encoding="utf-8")
+    markup = (
+        tmp_path
+        / "dist-newstyle/build/x/demo/t/spec/hpc/vanilla/html/demo-inplace/Demo.hs.html"
+    )
+    markup.parent.mkdir(parents=True)
+    markup.write_text(
+        '<span class="lineno">    2 </span><span class="istickedoff">choose = 1</span>\n'
+        '<span class="lineno">    3 </span><span class="nottickedoff">missing = 0</span>\n',
+        encoding="utf-8",
+    )
+    assert covered_lines(tmp_path, source, "haskell") == {2}

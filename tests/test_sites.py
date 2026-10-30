@@ -148,6 +148,51 @@ def test_python_typescript_and_rust_use_the_java_decisions(tmp_path):
     assert ("-", "") in {(site.original, site.mutant) for site in rust}
 
 
+def test_haskell_mutates_infix_not_booleans_constants_and_negation(tmp_path):
+    source = """\
+module Demo where
+
+choose ok x =
+  if not ok || x == 0
+    then False
+    else x + 1 > 0 && x /= 1
+
+negative = -1
+"""
+    sites = _sites(tmp_path, "src/Demo.hs", source)
+    pairs = {(site.original, site.mutant) for site in sites}
+    assert ("not", "") in pairs
+    assert ("||", "&&") in pairs
+    assert ("==", "/=") in pairs
+    assert ("False", "True") in pairs
+    assert ("+", "-") in pairs
+    assert (">", ">=") in pairs
+    assert ("&&", "||") in pairs
+    assert ("/=", "==") in pairs
+    assert ("-", "") in pairs
+    assert ("0", "1") in pairs
+    assert ("1", "0") in pairs
+    assert {site.namespace for site in sites} == {"Demo"}
+    assert {site.form_id for site in sites} == {"defn/choose", "defn/negative"}
+
+
+def test_haskell_does_not_mutate_an_operator_definition_name(tmp_path):
+    source = "module Demo where\nleft + right = left\n"
+    assert _sites(tmp_path, "src/Demo.hs", source) == []
+
+
+def test_haskell_does_not_mutate_literals_in_local_signatures(tmp_path):
+    source = """\
+module Demo where
+outer =
+  let marker :: Proxy 1
+      marker = undefined
+  in True
+"""
+    pairs = {(site.original, site.mutant) for site in _sites(tmp_path, "src/Demo.hs", source)}
+    assert pairs == {("True", "False")}
+
+
 def test_python_private_and_class_namespace(tmp_path):
     source = """class Board:
     def place(self, x):

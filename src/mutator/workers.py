@@ -1,9 +1,9 @@
 """Run mutants in symlink overlays, the way clj-mutate runs its workers.
 
 Each worker is a directory under target/mutation-workers. Project files are
-linked in. The file under test is a private copy, so workers can mutate it at
-the same time without touching the original tree. The overlay is removed when
-the file's mutants finish.
+linked in. The file under test and mutable build trees are private copies, so
+workers can mutate and compile at the same time without touching the original
+tree. The overlay is removed when the file's mutants finish.
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ SKIP_LINK = frozenset(
         "venv",
         "target",
         "dist",
+        "dist-newstyle",
         "build",
         "out",
         "coverage",
@@ -41,6 +42,7 @@ SKIP_LINK = frozenset(
         ".pytest_cache",
         ".mypy_cache",
         ".clj-kondo",
+        ".stack-work",
         ".gradle",
     }
 )
@@ -61,6 +63,10 @@ CONFIGS = (
     "tsconfig.json",
     "Cargo.toml",
     "Cargo.lock",
+    "cabal.project",
+    "cabal.project.local",
+    "stack.yaml",
+    "stack.yaml.lock",
     "pyproject.toml",
     "pytest.ini",
     "setup.cfg",

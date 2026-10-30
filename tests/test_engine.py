@@ -7,7 +7,7 @@ from mutator.engine import mutate_file, restore_backups
 from mutator.edn import loads
 from mutator.metrics import snapshot_path
 from mutator.runner import CommandResult
-from mutator.workers import create_workers, delete_tree, new_run_dir, worker_count
+from mutator.workers import CONFIGS, SKIP_LINK, create_workers, delete_tree, new_run_dir, worker_count
 
 
 class FakeRunner:
@@ -286,6 +286,28 @@ def test_a_mutation_run_leaves_the_project_tree_unchanged(tmp_path):
     )
     assert path.read_text(encoding="utf-8") == original
     assert [item for item in (tmp_path / "target").rglob("*") if item.is_file()] == []
+
+
+def test_haskell_build_trees_are_private_to_each_worker(tmp_path):
+    source = tmp_path / "src" / "Demo.hs"
+    source.parent.mkdir(parents=True)
+    source.write_text("module Demo where\nvalue = 1\n", encoding="utf-8")
+    (tmp_path / "cabal.project").write_text("packages: .\n", encoding="utf-8")
+    (tmp_path / "stack.yaml").write_text("resolver: lts-24.0\n", encoding="utf-8")
+    (tmp_path / "dist-newstyle").mkdir()
+    (tmp_path / ".stack-work").mkdir()
+    base = tmp_path / "target" / "mutation-workers" / "run-test"
+    workers = create_workers(base, tmp_path, "src/Demo.hs", source.read_bytes(), 1)
+    try:
+        worker = workers[0]
+        assert not (worker / "dist-newstyle").exists()
+        assert not (worker / ".stack-work").exists()
+        assert not (worker / "cabal.project").is_symlink()
+        assert not (worker / "stack.yaml").is_symlink()
+        assert {"dist-newstyle", ".stack-work"} <= SKIP_LINK
+        assert {"cabal.project", "stack.yaml"} <= set(CONFIGS)
+    finally:
+        delete_tree(base)
 
 
 def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):

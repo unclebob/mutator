@@ -1,7 +1,8 @@
 """Decide which lines the tests already exercise.
 
 Java uses JaCoCo source lines. Go uses statement profiles. Clojure prefers
-Cloverage's per-line form counts, then LCOV. The other languages use LCOV.
+Cloverage's per-line form counts, then LCOV. Haskell uses HPC markup. The
+remaining languages use LCOV.
 A file that does not appear in a report has no coverage data.
 """
 
@@ -223,4 +224,9 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
         html = _covered_from_pairs(_lookup(bundle.form_html, path))
         if html is not None:
             return html
+    if language == "haskell":
+        lines = _lookup(bundle.hpc_html, path)
+        if lines is None:
+            lines = _lookup(bundle.hpc_html, Path(path).name)
+        return _covered_from_pairs(lines)
     return _covered_from_pairs(_lookup(bundle.lcov, path))
