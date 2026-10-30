@@ -238,9 +238,9 @@ def test_a_site_remembers_where_its_statement_starts(tmp_path):
 
 def test_php_uses_the_java_decisions(tmp_path):
     source = """<?php
-namespace App\\Survey;
+namespace App\\Foo;
 
-class Board
+class Bar
 {
     public function __construct(private bool $ready = TRUE) {}
 
@@ -258,7 +258,7 @@ class Board
     }
 }
 """
-    sites = _sites(tmp_path, "app/Survey/Board.php", source)
+    sites = _sites(tmp_path, "app/Foo/Bar.php", source)
     public = {(site.original, site.mutant) for site in sites if site.form_id == "defn/place"}
     for pair in [
         (">", ">="),
@@ -279,4 +279,4 @@ class Board
         ("defn/__construct", "TRUE", "FALSE"),
         ("defn-/hide", "True", "False"),
     }
-    assert {site.namespace for site in sites} == {"App.Survey.Board"}
+    assert {site.namespace for site in sites} == {"App.Foo.Bar"}
