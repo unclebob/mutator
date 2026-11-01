@@ -96,3 +96,43 @@ def test_go_profile_does_not_cross_files(tmp_path):
     profile.write_text("mode: set\na/b/widget.go:2.1,2.2 1 1\n", encoding="utf-8")
     assert covered_lines(tmp_path, short, "go") is None
     assert covered_lines(tmp_path, long, "go") == {2}
+
+
+def test_go_profile_names_files_by_module_path(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.com/demo\n\ngo 1.22\n", encoding="utf-8")
+    profile = tmp_path / "target" / "coverage" / "go" / "coverage.out"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(
+        "mode: set\n"
+        "example.com/demo/calc/calc.go:3.24,4.11 1 1\n"
+        "example.com/demo/calc/calc.go:7.2,7.10 1 0\n",
+        encoding="utf-8",
+    )
+    source = tmp_path / "calc" / "calc.go"
+    source.parent.mkdir()
+    source.write_text("package calc\n", encoding="utf-8")
+    assert covered_lines(tmp_path, source, "go") == {3, 4}
+
+
+def test_go_profile_finds_a_module_below_the_root(tmp_path):
+    module = tmp_path / "svc"
+    module.mkdir()
+    (module / "go.mod").write_text('module "example.com/other"\n', encoding="utf-8")
+    profile = tmp_path / "target" / "coverage" / "go" / "coverage.out"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("mode: set\nexample.com/other/calc/calc.go:5.1,5.9 1 1\n", encoding="utf-8")
+    source = module / "calc" / "calc.go"
+    source.parent.mkdir()
+    source.write_text("package calc\n", encoding="utf-8")
+    assert covered_lines(tmp_path, source, "go") == {5}
+
+
+def test_go_package_named_like_its_module_does_not_take_the_root_files_hits(tmp_path):
+    (tmp_path / "shop").mkdir()
+    (tmp_path / "go.mod").write_text("module shop\n", encoding="utf-8")
+    profile = tmp_path / "target" / "coverage" / "go" / "coverage.out"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("mode: set\nshop/server.go:2.1,2.2 1 1\n", encoding="utf-8")
+    nested = tmp_path / "shop" / "server.go"
+    nested.write_text("package shop\nfunc Run() {}\n", encoding="utf-8")
+    assert covered_lines(tmp_path, nested, "go") is None

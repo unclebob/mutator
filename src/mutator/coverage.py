@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from mutator.crapper_link import ensure_crapper
+from mutator.runner import nearest
 
 
 def _candidates(normalize, source_path: str) -> list[str]:
@@ -194,10 +195,33 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
     return found
 
 
-def _go_lines(profile, source_path: str) -> set[int] | None:
+def _module_path(go_mod: Path) -> str | None:
+    for line in go_mod.read_text(encoding="utf-8").splitlines():
+        words = line.split()
+        if len(words) > 1 and words[0] == "module":
+            return words[1].strip('"')
+    return None
+
+
+def _go_key(root: Path, source_path: Path) -> str | None:
+    """The name go test gives this file: the module path, then the path inside the module."""
+
+    directory = nearest(source_path, "go.mod", root)
+    if directory is None:
+        return None
+    module = _module_path(directory / "go.mod")
+    if module is None:
+        return None
+    return f"{module}/{source_path.resolve().relative_to(directory).as_posix()}"
+
+
+def _go_lines(profile, source_path: str, key: str | None) -> set[int] | None:
     if not profile:
         return None
-    segments = _lookup(profile, source_path)
+    if key is None:
+        segments = _lookup(profile, source_path)
+    else:
+        segments = profile.get(key)
     if segments is None:
         return None
     covered: set[int] = set()
@@ -218,7 +242,7 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
         return _lookup(_jacoco_index(root), path)
     bundle = crapper.coverage.load_bundle(root)
     if language == "go":
-        return _go_lines(bundle.go_profile, path)
+        return _go_lines(bundle.go_profile, path, _go_key(root, source_path))
     if language == "clojure":
         html = _covered_from_pairs(_lookup(bundle.form_html, path))
         if html is not None:
