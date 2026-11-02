@@ -225,11 +225,10 @@ def _apply_selected(
     command, cwd = test_plan(root, path, language, test_command)
     cache_key = (_command_key(command), str(cwd))
     _remember_baseline(baselines, cache_key, runner, command, cwd)
-    ok, seconds, tail = baselines[cache_key]
+    ok, _seconds, tail = baselines[cache_key]
     if not ok:
         return _baseline_failure(file_key, command, tail)
-    timeout = max(2.0, seconds * timeout_factor)
-    run_mutants(
+    worker_failure = run_mutants(
         root,
         path,
         original,
@@ -238,10 +237,12 @@ def _apply_selected(
         runner,
         command,
         cwd,
-        timeout,
+        timeout_factor,
         file_key,
         outcomes,
     )
+    if worker_failure is not None:
+        return _baseline_failure(file_key, command, worker_failure)
     return None
 
 
@@ -289,6 +290,9 @@ def mutate_file(
         return RunResult(path=file_key, forms=[], written=[], skipped="file is not UTF-8")
     original, source = decoded
     found = sites_in_file(source, path, root, file_key)
+    requested = [site for site in found if lines is None or site.line in lines]
+    coverage_missing = bool(found) and covered_lines is None and not ignore_coverage
+    inconclusive = coverage_missing or not requested
     covered = _coverage_map(found, covered_lines, ignore_coverage)
     _warn_uncovered(file_key, found, covered_lines, ignore_coverage)
     history = load_history(root, file_key)
@@ -313,7 +317,7 @@ def mutate_file(
     if failure is not None:
         return failure
     forms = _forms(source, path, root, file_key, found, covered, outcomes, lines)
-    written = write_results(root, file_key, forms, outcomes)
+    written = [] if inconclusive else write_results(root, file_key, forms, outcomes)
     _restore_if_dirty(path, original)
     return RunResult(
         path=file_key,
@@ -321,6 +325,7 @@ def mutate_file(
         written=[item.as_posix() for item in written],
         sites=found,
         statuses=_statuses(found, covered, outcomes),
+        inconclusive=inconclusive,
     )
 
 

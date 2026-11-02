@@ -123,6 +123,14 @@ def test_haskell_coverage_uses_hpc_markup(tmp_path):
     assert covered_lines(tmp_path, source, "haskell") == {2}
 
 
+def test_headerless_haskell_main_uses_the_main_hpc_module(tmp_path):
+    source = tmp_path / "app" / "Main.hs"
+    source.parent.mkdir(parents=True)
+    source.write_text('main = putStrLn "ok"\n', encoding="utf-8")
+    _write_hpc(tmp_path, "demo", "Main", covered_line=1)
+    assert covered_lines(tmp_path, source, "haskell") == {1}
+
+
 def test_haskell_coverage_maps_hierarchical_dotted_modules(tmp_path):
     source = tmp_path / "hbs2-peer/lib/HBS2/Peer/RepositoryLease/Worker.hs"
     source.parent.mkdir(parents=True)

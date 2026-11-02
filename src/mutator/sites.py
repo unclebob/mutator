@@ -377,7 +377,7 @@ def _visit_leaf(node, data: bytes, language: str, found: list[RawSite]) -> None:
 def _visit_node(node, data: bytes, language: str, found: list[RawSite]) -> None:
     if language == "typescript" and _in_type(node):
         return
-    if language == "haskell" and _inside_node(node, "signature"):
+    if language == "haskell" and _inside_any_node(node, {"signature", "type_application"}):
         return
     if language == "d" and _inside_any_node(
         node,

@@ -85,8 +85,9 @@ def test_mutants_are_killed_or_kept_and_the_snapshot_is_differential(tmp_path):
     )
     assert second.forms[0].killed == 1
     assert second.forms[0].survived == 3
-    # Baseline plus the three survivors. The killed mutant stays in the snapshot.
-    assert runner.calls - first_calls == 4
+    # Project baseline, one warm-up per worker, and the three survivors. The
+    # killed mutant stays in the snapshot.
+    assert runner.calls - first_calls == 1 + worker_count(3, None) + 3
 
 
 def test_uncovered_sites_are_not_executed(tmp_path):
@@ -161,6 +162,84 @@ def test_a_failed_baseline_does_not_rewrite_metrics(tmp_path):
         baselines={},
     )
     assert result.baseline_failed
+    assert not snapshot_path(tmp_path, "demo").exists()
+
+
+def test_each_worker_is_warmed_before_mutants_use_its_timeout(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def place(x):\n    return x + 1\n", encoding="utf-8")
+
+    class ColdWorker:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            worker = "mutation-workers" in cwd.as_posix()
+            source = (cwd / "src" / "demo.py").read_text(encoding="utf-8")
+            if not worker:
+                return CommandResult(code=0, timed_out=False, seconds=0.01, output="")
+            if source == path.read_text(encoding="utf-8"):
+                return CommandResult(code=0, timed_out=False, seconds=3.0, output="")
+            timed_out = timeout is not None and timeout < 3.0
+            return CommandResult(
+                code=124 if timed_out else 0,
+                timed_out=timed_out,
+                seconds=min(timeout or 3.0, 3.0),
+                output="",
+            )
+
+    result = mutate_file(
+        path,
+        tmp_path,
+        runner=ColdWorker(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        max_workers=1,
+    )
+    assert result.baseline_failed is False
+    assert result.forms[0].killed == 0
+    assert result.forms[0].survived == 2
+
+
+def test_a_failed_worker_baseline_is_not_counted_as_killed_mutants(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def place(x):\n    return x + 1\n", encoding="utf-8")
+
+    class BrokenOverlay:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            worker = "mutation-workers" in cwd.as_posix()
+            return CommandResult(
+                code=1 if worker else 0,
+                timed_out=False,
+                seconds=0.01,
+                output="worker cannot build" if worker else "",
+            )
+
+    result = mutate_file(
+        path,
+        tmp_path,
+        runner=BrokenOverlay(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        max_workers=1,
+    )
+    assert result.baseline_failed is True
+    assert "Worker baseline failed" in result.baseline_message
     assert not snapshot_path(tmp_path, "demo").exists()
 
 

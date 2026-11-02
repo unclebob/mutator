@@ -193,6 +193,18 @@ outer =
     assert pairs == {("True", "False")}
 
 
+def test_haskell_does_not_mutate_visible_type_applications(tmp_path):
+    source = """\
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeApplications #-}
+module Demo where
+import Data.Proxy
+number = Proxy @1
+flag = Proxy @'True
+"""
+    assert _sites(tmp_path, "src/Demo.hs", source) == []
+
+
 def test_d_mutates_runtime_operators_but_not_types_or_compile_time_constraints(tmp_path):
     source = """\
 module demo;
@@ -232,6 +244,25 @@ def test_d_private_function_uses_a_private_form_id(tmp_path):
         "module demo;\nprivate bool hidden() { return false; }\n",
     )
     assert {site.form_id for site in sites} == {"defn-/hidden"}
+
+
+def test_d_scoped_private_functions_use_private_form_ids(tmp_path):
+    colon = _sites(
+        tmp_path,
+        "source/colon.d",
+        "module colon;\nprivate:\nbool hidden() { return false; }\n",
+    )
+    block = _sites(
+        tmp_path,
+        "source/block.d",
+        "module block;\nprivate {\nbool hidden() { return false; }\n}\n",
+    )
+    aggregate = _sites(
+        tmp_path,
+        "source/aggregate.d",
+        "module aggregate;\nclass Box {\nprivate:\nbool hidden() { return false; }\n}\n",
+    )
+    assert {site.form_id for site in colon + block + aggregate} == {"defn-/hidden"}
 
 
 def test_python_private_and_class_namespace(tmp_path):

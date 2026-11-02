@@ -224,7 +224,8 @@ def _declared_haskell_module(source_path: Path) -> str | None:
     except OSError:
         return None
     match = _HASKELL_MODULE.search(source)
-    return match.group(1) if match else None
+    # Haskell 2010 defines a module without an explicit header as Main.
+    return match.group(1) if match else "Main"
 
 
 def _hpc_module(key: str) -> str | None:

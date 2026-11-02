@@ -100,12 +100,12 @@ Tokens inside strings, comments, and quoted Clojure forms are left alone. A repl
 | TypeScript | the Java set, plus `===`/`!==`, `??` to `||`, and `?.` to `.`. A call or index drops `?.` (`a?.()` becomes `a()`). `.js`, `.jsx`, `.mjs`, and `.cjs` use these rules. |
 | Rust | the Java set (`&&`/`||`, `!`, unary `-`). |
 | Python | the Java set, spelled `and`/`or`, `not`, and `True`/`False`. |
-| Haskell | arithmetic/comparison operators, `==`/`/=`, `&&`/`||`, unary `-`, a callee `not`, `True`/`False`, and `0`/`1`. Operator names in definition heads are left alone. |
+| Haskell | arithmetic/comparison operators, `==`/`/=`, `&&`/`||`, unary `-`, a callee `not`, `True`/`False`, and `0`/`1`. Operator names in definition heads and visible type applications are left alone. |
 | D | arithmetic/comparison operators, `==`/`!=`, `is`/`!is`, `&&`/`||`, unary `!`/`-`, `true`/`false`, and `0`/`1`. Type and compile-time expressions are left alone. |
 
 ## Tests and coverage
 
-The baseline command has to pass before any mutant runs. A mutant's timeout is ten times that baseline, and at least two seconds. `--timeout-factor` changes the multiple. `--test-command` replaces the default. Defaults:
+The baseline command has to pass before any mutant runs. Each worker overlay then runs its own unmutated warm-up, so its build cache and timeout reflect that worker rather than the already-warm project tree. A mutant's timeout is ten times its worker's warm-up, and at least two seconds. `--timeout-factor` changes the multiple. `--test-command` replaces the default. Defaults:
 
 | Language | Command | Where |
 | --- | --- | --- |

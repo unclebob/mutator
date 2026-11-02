@@ -378,6 +378,7 @@ def _report(file_key: str, site: Site) -> None:
 
 def _run_all(
     directories: list[Path],
+    timeouts: dict[Path, float],
     sites: list[Site],
     outcomes: dict[str, str],
     root: Path,
@@ -386,7 +387,6 @@ def _run_all(
     runner,
     command: Command,
     cwd: Path,
-    timeout: float,
     file_key: str,
 ) -> None:
     pending: Queue = Queue()
@@ -407,13 +407,41 @@ def _run_all(
                 runner,
                 command,
                 cwd,
-                timeout,
+                timeouts[directory],
                 file_key,
             )
             for directory in directories
         ]
         for future in futures:
             future.result()
+
+
+def _worker_baselines(
+    directories: list[Path],
+    runner,
+    command: Command,
+    root: Path,
+    cwd: Path,
+    timeout_factor: float,
+) -> tuple[dict[Path, float], str | None]:
+    """Warm every overlay and derive mutant timeouts in that same environment."""
+
+    def run(directory: Path):
+        result = runner.run(command, mapped_cwd(directory, root, cwd), None)
+        return directory, result
+
+    with ThreadPoolExecutor(max_workers=len(directories)) as pool:
+        results = list(pool.map(run, directories))
+    timeouts: dict[Path, float] = {}
+    for directory, result in results:
+        if result.code != 0 or result.timed_out:
+            tail = "\n".join(result.output.splitlines()[-20:])
+            message = f"Worker baseline failed in {directory}: exit {result.code}"
+            if tail:
+                message = f"{message}\n{tail}"
+            return {}, message
+        timeouts[directory] = max(2.0, result.seconds * timeout_factor)
+    return timeouts, None
 
 
 def run_mutants(
@@ -425,22 +453,28 @@ def run_mutants(
     runner,
     command: Command,
     cwd: Path,
-    timeout: float,
+    timeout_factor: float,
     file_key: str,
     outcomes: dict[str, str],
-) -> None:
+) -> str | None:
     """Mutate ``sites`` in parallel overlays of ``root``. The source stays put."""
 
     if not sites:
-        return
+        return None
     base = new_run_dir(root)
     try:
         relative = source.resolve().relative_to(root.resolve()).as_posix()
         directories = create_workers(
             base, root, relative, original, worker_count(len(sites), max_workers)
         )
+        timeouts, failure = _worker_baselines(
+            directories, runner, command, root, cwd, timeout_factor
+        )
+        if failure is not None:
+            return failure
         _run_all(
             directories,
+            timeouts,
             sites,
             outcomes,
             root,
@@ -449,8 +483,8 @@ def run_mutants(
             runner,
             command,
             cwd,
-            timeout,
             file_key,
         )
+        return None
     finally:
         delete_tree(base)
