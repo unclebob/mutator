@@ -1,8 +1,8 @@
 """Find mutation sites.
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
-one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, and Python
-use the same decisions as Java, spelled in that language. TypeScript also
+one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, Python,
+Haskell, and D use the same decisions as Java, spelled in that language. TypeScript also
 mutates `??` to `||` and `?.` to `.` (removed on a call or index). JavaScript
 files use the TypeScript rules.
 """
@@ -29,6 +29,8 @@ _BINARY = {
     "??": "||",
     "and": "or",
     "or": "and",
+    "is": "!is",
+    "!is": "is",
 }
 
 _BINARY_PARENTS = {
@@ -36,9 +38,17 @@ _BINARY_PARENTS = {
     "binary_operator",
     "comparison_operator",
     "boolean_operator",
+    "infix",
+    "add_expression",
+    "mul_expression",
+    "rel_expression",
+    "equal_expression",
+    "identity_expression",
+    "logical_and_expression",
+    "logical_or_expression",
 }
 
-_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator"}
+_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator", "negation"}
 
 _BOOLEANS = {"true": "false", "false": "true", "True": "False", "False": "True"}
 
@@ -127,7 +137,7 @@ def _category(token: str) -> str:
         return "arithmetic"
     if token in {">", ">=", "<", "<="}:
         return "comparison"
-    if token in {"==", "!=", "===", "!=="}:
+    if token in {"==", "!=", "/=", "===", "!==", "is", "!is"}:
         return "equality"
     if token in {"&&", "||", "??", "and", "or"}:
         return "logical"
@@ -139,6 +149,10 @@ def _binary_mutant(language: str, token: str) -> str | None:
         return None
     if token == "??" and language != "typescript":
         return None
+    if language == "haskell" and token == "==":
+        return "/="
+    if language == "haskell" and token == "/=":
+        return "=="
     return _BINARY.get(token)
 
 
@@ -279,8 +293,19 @@ def _parent_type(node) -> str:
     return node.parent.type
 
 
+def _haskell_definition_operator(node) -> bool:
+    infix = node.parent
+    owner = infix.parent if infix is not None else None
+    if infix is None or infix.type != "infix" or owner is None or owner.type != "function":
+        return False
+    named = owner.named_children
+    return bool(named) and named[0].id == infix.id
+
+
 def _visit_binary(node, token: str, parent: str, language: str, found: list[RawSite]) -> None:
     if parent not in _BINARY_PARENTS:
+        return
+    if language == "haskell" and _haskell_definition_operator(node):
         return
     mutant = _binary_mutant(language, token)
     if mutant is not None:
@@ -295,8 +320,18 @@ def _visit_optional(node, token: str, language: str, found: list[RawSite]) -> No
         _add(found, node, "?.", optional, "optional")
 
 
-def _visit_not(node, token: str, parent: str, found: list[RawSite]) -> None:
+def _haskell_not_callee(node) -> bool:
+    parent = node.parent
+    if parent is None or parent.type != "apply":
+        return False
+    function = parent.child_by_field_name("function")
+    return function is not None and function.id == node.id
+
+
+def _visit_not(node, token: str, parent: str, language: str, found: list[RawSite]) -> None:
     if token in {"!", "not"} and parent in _UNARY_PARENTS | {"comparison_operator"}:
+        _add(found, node, token, "", "unary")
+    elif language == "haskell" and token == "not" and _haskell_not_callee(node):
         _add(found, node, token, "", "unary")
 
 
@@ -305,8 +340,11 @@ def _visit_negation(node, token: str, parent: str, found: list[RawSite]) -> None
         _add(found, node, token, "", "unary")
 
 
-def _visit_boolean_token(node, token: str, found: list[RawSite]) -> None:
-    if node.type in {"true", "false"} and token in _BOOLEANS:
+def _visit_boolean_token(node, token: str, language: str, found: list[RawSite]) -> None:
+    node_is_boolean = node.type in {"true", "false"} or (
+        language == "haskell" and node.type == "constructor"
+    )
+    if node_is_boolean and token in _BOOLEANS:
         _add(found, node, token, _BOOLEANS[token], "boolean")
 
 
@@ -330,19 +368,53 @@ def _visit_leaf(node, data: bytes, language: str, found: list[RawSite]) -> None:
     parent = _parent_type(node)
     _visit_binary(node, token, parent, language, found)
     _visit_optional(node, token, language, found)
-    _visit_not(node, token, parent, found)
+    _visit_not(node, token, parent, language, found)
     _visit_negation(node, token, parent, found)
-    _visit_boolean_token(node, token, found)
+    _visit_boolean_token(node, token, language, found)
     _visit_constant(node, token, found)
 
 
 def _visit_node(node, data: bytes, language: str, found: list[RawSite]) -> None:
     if language == "typescript" and _in_type(node):
         return
+    if language == "haskell" and _inside_any_node(node, {"signature", "type_application"}):
+        return
+    if language == "d" and _inside_any_node(
+        node,
+        {
+            "type",
+            "template_parameters",
+            "constraint",
+            "static_if_condition",
+            "version_condition",
+            "debug_condition",
+            "is_expression",
+            "traits_expression",
+        },
+    ):
+        return
     if node.child_count == 0:
         _visit_leaf(node, data, language, found)
     else:
         _visit_bool_lit(node, data, found)
+
+
+def _inside_node(node, node_type: str) -> bool:
+    current = node.parent
+    while current is not None:
+        if current.type == node_type:
+            return True
+        current = current.parent
+    return False
+
+
+def _inside_any_node(node, node_types: set[str]) -> bool:
+    current = node.parent
+    while current is not None:
+        if current.type in node_types:
+            return True
+        current = current.parent
+    return False
 
 
 def _visit(node, data: bytes, language: str, found: list[RawSite]) -> None:

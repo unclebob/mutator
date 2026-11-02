@@ -1,7 +1,9 @@
 """Decide which lines the tests already exercise.
 
 Java uses JaCoCo source lines. Go uses statement profiles. Clojure prefers
-Cloverage's per-line form counts, then LCOV. The other languages use LCOV.
+Cloverage's per-line form counts, then LCOV. Haskell uses HPC markup and D
+uses compiler coverage listings. The
+remaining languages use LCOV.
 A file that does not appear in a report has no coverage data.
 """
 
@@ -9,6 +11,7 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 from pathlib import Path
+import re
 
 from mutator.crapper_link import ensure_crapper
 
@@ -209,6 +212,63 @@ def _go_lines(profile, source_path: str) -> set[int] | None:
     return covered
 
 
+_HASKELL_MODULE = re.compile(
+    r"^\s*module\s+([A-Z][A-Za-z0-9_']*(?:\.[A-Z][A-Za-z0-9_']*)*)\b",
+    re.MULTILINE,
+)
+
+
+def _declared_haskell_module(source_path: Path) -> str | None:
+    try:
+        source = source_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    match = _HASKELL_MODULE.search(source)
+    # Haskell 2010 defines a module without an explicit header as Main.
+    return match.group(1) if match else "Main"
+
+
+def _hpc_module(key: str) -> str | None:
+    name = Path(key.replace("\\", "/")).name
+    if not name.endswith(".hs"):
+        return None
+    return name[: -len(".hs")]
+
+
+def _package_owns_report(source_package: str, key: str) -> bool:
+    parts = _parts(key.replace("\\", "/"))
+    if not parts:
+        return False
+    report_package = parts[0]
+    return report_package == source_package or report_package.startswith(source_package + "-")
+
+
+def _haskell_lines(root: Path, source_path: Path, index: dict):
+    path = source_path.resolve().as_posix()
+    lines = _lookup(index, path)
+    if lines is not None:
+        return lines
+
+    module = _declared_haskell_module(source_path)
+    if module is None:
+        return None
+    candidates = [key for key in index if _hpc_module(key) == module]
+    if len(candidates) == 1:
+        return index[candidates[0]]
+
+    try:
+        relative = source_path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return None
+    parts = _parts(relative)
+    if not parts:
+        return None
+    owned = [key for key in candidates if _package_owns_report(parts[0], key)]
+    if len(owned) == 1:
+        return index[owned[0]]
+    return None
+
+
 def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | None:
     """Lines with a hit, or None when this file is absent from coverage."""
 
@@ -223,4 +283,8 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
         html = _covered_from_pairs(_lookup(bundle.form_html, path))
         if html is not None:
             return html
+    if language == "haskell":
+        return _covered_from_pairs(_haskell_lines(root, source_path, bundle.hpc_html))
+    if language == "d":
+        return _covered_from_pairs(_lookup(bundle.d_coverage, path))
     return _covered_from_pairs(_lookup(bundle.lcov, path))

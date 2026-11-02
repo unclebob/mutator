@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from mutator.crapper_link import ensure_crapper
@@ -46,6 +47,55 @@ def _typescript_private(name: str, header: str) -> bool:
     return name.startswith("#") or bool(re.search(r"\bprivate\b", header))
 
 
+_D_PROTECTION = {"private", "package", "protected", "public", "export"}
+
+
+def _d_scoped_private(data: bytes, node) -> bool:
+    """Protection attributes in D can apply to a following section or block."""
+
+    parent = node.parent
+    if parent is None:
+        return False
+    section_private = False
+    block_private: bool | None = None
+    pending_block: bool | None = None
+    for sibling in parent.children:
+        if sibling.id == node.id:
+            return block_private if block_private is not None else section_private
+        text = data[sibling.start_byte : sibling.end_byte].decode("utf-8")
+        if sibling.type == "attribute_declaration":
+            protection = text.rstrip(":").strip()
+            if protection in _D_PROTECTION:
+                section_private = protection == "private"
+            continue
+        if sibling.type in _D_PROTECTION:
+            pending_block = sibling.type == "private"
+            continue
+        if sibling.type == "{" and pending_block is not None:
+            block_private = pending_block
+            pending_block = None
+            continue
+        if sibling.type == "}" and block_private is not None:
+            block_private = None
+    return False
+
+
+@lru_cache(maxsize=32)
+def _d_scoped_private_functions(source: str) -> frozenset[tuple[str, int]]:
+    crapper = ensure_crapper()
+    data, tree = crapper.languages.treesitter.parse(source, "d")
+    found = set()
+    for node in crapper.languages.treesitter.descendants(tree.root_node):
+        if node.type != "function_declaration" or not _d_scoped_private(data, node):
+            continue
+        ident = crapper.languages.treesitter.child_of_type(node, "identifier")
+        if ident is None:
+            continue
+        name = crapper.languages.treesitter.node_text(data, ident)
+        found.add((name, node.start_point[0] + 1))
+    return frozenset(found)
+
+
 def is_private(language: str, name: str, source: str, start: int, end: int) -> bool:
     """True when uml-viewer should treat the operation as private."""
 
@@ -62,6 +112,11 @@ def is_private(language: str, name: str, source: str, start: int, end: int) -> b
         return re.match(r"pub\s", header) is None
     if language == "typescript":
         return _typescript_private(name, header)
+    if language == "d":
+        return bool(re.search(r"\bprivate\b", header)) or (
+            name,
+            start,
+        ) in _d_scoped_private_functions(source)
     return False
 
 

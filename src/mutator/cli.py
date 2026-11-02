@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -54,7 +55,7 @@ def _skipped_directory_text() -> str:
 HELP = f"""\
 Usage: mutator [options] [path-or-filter ...]
 
-Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, and Python,
+Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, Python, Haskell, and D,
 run the project's tests against each one, and write `.metrics/mutate` for
 uml-viewer. Namespaces and function names are the ones crapper writes into
 `.metrics/crap.edn`.
@@ -117,10 +118,11 @@ tree is left unchanged. A copy left under target/mutator-backup/ by an
 interrupted older run is restored before a non-scan run.
 
 Exit codes:
-  0  every executed mutant was killed, or there was nothing to run
+  0  every available mutation result was killed
   1  usage error
   2  baseline tests failed
   3  at least one mutant survived
+  4  no source or no mutation result was available
 
 Coverage, when it is produced, uses the same commands as crapper:
   Clojure      clj -M:cov --lcov
@@ -129,6 +131,8 @@ Coverage, when it is produced, uses the same commands as crapper:
   TypeScript   npm run coverage, Vitest, or c8
   Rust         cargo llvm-cov or cargo tarpaulin
   Python       coverage.py LCOV
+  Haskell      Cabal or Stack HPC markup
+  D            DUB compiler .lst line coverage
 
 A site on a line the report does not mark as hit is uncovered and is not run.
 """
@@ -215,12 +219,14 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 continue
             if arg == "--timeout-factor":
                 options.timeout_factor = float(_take(args, index, arg))
-                if options.timeout_factor <= 0:
-                    raise ValueError("--timeout-factor requires a positive number")
+                if not math.isfinite(options.timeout_factor) or options.timeout_factor <= 0:
+                    raise ValueError("--timeout-factor requires a finite positive number")
                 index += 2
                 continue
             if arg == "--mutation-warning":
                 options.mutation_warning = int(_take(args, index, arg))
+                if options.mutation_warning < 0:
+                    raise ValueError("--mutation-warning requires a non-negative integer")
                 index += 2
                 continue
             if arg == "--max-workers":
@@ -506,7 +512,7 @@ def _scan(options: Options, root: Path, files: list[Path]) -> int:
 def _record(result, forms: list, written: list[str]) -> str:
     if result.skipped:
         print(f"Skipping {result.path}: {result.skipped}", file=sys.stderr)
-        return "skip"
+        return "inconclusive"
     if result.baseline_failed:
         print(result.baseline_message, file=sys.stderr)
         return "baseline"
@@ -515,14 +521,18 @@ def _record(result, forms: list, written: list[str]) -> str:
     written.extend(result.written)
     if any(form.survived for form in result.forms):
         return "survived"
+    if result.inconclusive:
+        return "inconclusive"
     return "ok"
 
 
-def _finish(baseline_failed: bool, survived: bool) -> int:
+def _finish(baseline_failed: bool, survived: bool, inconclusive: bool) -> int:
     if baseline_failed:
         return 2
     if survived:
         return 3
+    if inconclusive:
+        return 4
     return 0
 
 
@@ -533,6 +543,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
     written: list[str] = []
     baseline_failed = False
     survived = False
+    inconclusive = False
     for path in files:
         result = mutate_file(
             path,
@@ -553,11 +564,13 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             baseline_failed = True
         elif outcome == "survived":
             survived = True
+        elif outcome == "inconclusive":
+            inconclusive = True
     if forms:
         print(format_results(forms), end="")
     for path in written:
         print(f"Wrote {path}", file=sys.stderr)
-    return _finish(baseline_failed, survived)
+    return _finish(baseline_failed, survived, inconclusive)
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -576,15 +589,20 @@ def run(argv: list[str] | None = None) -> int:
         return exc.code
     if not files:
         print("No source files to mutate.")
-        return 0
+        return 4
     if not options.scan:
         _restore(root)
     coverage = _prepare_coverage(options, root, files)
     if coverage != 0:
         return coverage
-    if options.scan:
-        return _scan(options, root, files)
-    return _mutate_files(options, root, files)
+    parse_error = getattr(ensure_crapper().languages.treesitter, "ParseError", ())
+    try:
+        if options.scan:
+            return _scan(options, root, files)
+        return _mutate_files(options, root, files)
+    except parse_error as exc:
+        print(f"mutator: {exc}", file=sys.stderr)
+        return 4
 
 
 def main(argv: list[str] | None = None) -> None:

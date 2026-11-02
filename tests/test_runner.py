@@ -131,7 +131,7 @@ def test_a_go_package_path_is_one_argument(tmp_path):
     command, directory = plan_command(root, source, "go", None)
     assert command == ["go", "test", "-count=1", "./a;echo no"]
     assert directory == root
-    echoed = CommandRunner().run(["/bin/echo", command[-1]], directory, None)
+    echoed = CommandRunner().run(["echo", command[-1]], directory, None)
     assert echoed.code == 0
     assert echoed.output.strip() == "./a;echo no"
 
@@ -153,3 +153,54 @@ def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     result = CommandRunner().run(command, worker, 5)
     assert result.code == 0
     assert result.output.strip() == "worker"
+
+
+def test_haskell_test_plans_cover_cabal_projects_stack_and_packages(tmp_path):
+    cabal_project = tmp_path / "multi"
+    source = cabal_project / "pkg" / "src" / "Demo.hs"
+    source.parent.mkdir(parents=True)
+    source.write_text("module Demo where\n", encoding="utf-8")
+    (cabal_project / "cabal.project").write_text("packages: pkg\n", encoding="utf-8")
+    command, directory = plan_command(cabal_project, source, "haskell", None)
+    assert command == ["cabal", "test", "all:tests"]
+    assert directory == cabal_project.resolve()
+
+    stack = tmp_path / "stacked"
+    stack_source = stack / "src" / "Demo.hs"
+    stack_source.parent.mkdir(parents=True)
+    stack_source.write_text("module Demo where\n", encoding="utf-8")
+    (stack / "stack.yaml").write_text("resolver: lts-24.0\n", encoding="utf-8")
+    assert plan_command(stack, stack_source, "haskell", None) == (
+        ["stack", "test"],
+        stack.resolve(),
+    )
+
+    package = tmp_path / "package"
+    package_source = package / "src" / "Demo.hs"
+    package_source.parent.mkdir(parents=True)
+    package_source.write_text("module Demo where\n", encoding="utf-8")
+    (package / "demo.cabal").write_text("name: demo\n", encoding="utf-8")
+    assert plan_command(package, package_source, "haskell", None) == (
+        ["cabal", "test"],
+        package.resolve(),
+    )
+
+
+def test_d_test_plan_uses_the_nearest_dub_package(tmp_path):
+    package = tmp_path / "package"
+    source = package / "source" / "demo.d"
+    source.parent.mkdir(parents=True)
+    source.write_text("module demo;\n", encoding="utf-8")
+    (package / "dub.sdl").write_text('name "demo"\n', encoding="utf-8")
+    assert plan_command(tmp_path, source, "d", None) == (
+        ["dub", "test"],
+        package.resolve(),
+    )
+
+    standalone = tmp_path / "standalone" / "source" / "demo.d"
+    standalone.parent.mkdir(parents=True)
+    standalone.write_text("module demo;\n", encoding="utf-8")
+    assert plan_command(tmp_path, standalone, "d", None) == (
+        ["dub", "test"],
+        tmp_path.resolve(),
+    )

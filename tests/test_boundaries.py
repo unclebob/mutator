@@ -62,6 +62,7 @@ from mutator.report import format_results, format_scan
 from mutator.runner import CommandResult, CommandRunner, _clojure_command
 from mutator.runner import test_plan as command_for
 from mutator.sites import _grammar
+from mutator.workers import worker_count
 
 
 def _form(namespace, name, file_name, digest_text, killed=1, private=False, line=2):
@@ -373,6 +374,9 @@ def test_options_reject_bad_values_and_keep_flag_defaults(monkeypatch):
     assert parse_args(["--timeout-factor", "1"]).timeout_factor == 1
     assert parse_args(["--timeout-factor", "0"]).exit_code == 1
     assert parse_args(["--timeout-factor", "-1"]).exit_code == 1
+    assert parse_args(["--timeout-factor", "nan"]).exit_code == 1
+    assert parse_args(["--timeout-factor", "inf"]).exit_code == 1
+    assert parse_args(["--mutation-warning", "-1"]).exit_code == 1
     assert parse_args(["--use-existing-coverage"]).use_existing_coverage is True
     assert parse_args(["--reuse-coverage"]).use_existing_coverage is True
     assert parse_args(["--verbose"]).verbose is True
@@ -535,7 +539,7 @@ def test_existing_coverage_is_not_regenerated(monkeypatch, tmp_path):
 
 def test_cli_exit_codes_follow_kills_baseline_failure_and_an_empty_tree(tmp_path, capsys):
     empty = run(["--no-coverage", "--root", str(tmp_path)])
-    assert empty == 0
+    assert empty == 4
     assert "No source files" in capsys.readouterr().out
 
     path = tmp_path / "src" / "demo.py"
@@ -721,8 +725,8 @@ def test_selection_coverage_and_timeouts_keep_their_boundaries(tmp_path, capsys,
         mutation_warning=50,
         baselines={},
     )
-    assert clock.timeouts[0] is None
-    assert clock.timeouts[1] == 300
+    assert clock.timeouts.count(None) == 1 + worker_count(2, None)
+    assert clock.timeouts.count(300) == 2
 
     class Red:
         verbose = False

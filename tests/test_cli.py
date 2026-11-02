@@ -2,7 +2,6 @@ import subprocess
 import sys
 
 from mutator.cli import parse_args, run
-from mutator.runner import CommandResult
 
 
 def test_lines_option_parses_positive_numbers():
@@ -119,3 +118,67 @@ def test_a_failed_coverage_command_does_not_read_the_report(tmp_path, capsys):
     assert "will not be read" in captured.err
     assert "Baseline failed" not in captured.err
     assert path.read_text(encoding="utf-8").startswith("def place")
+
+
+def test_missing_coverage_is_inconclusive_and_preserves_the_last_snapshot(tmp_path, capsys):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    command = (
+        f"{sys.executable} -c \"import sys; sys.path.insert(0, 'src'); "
+        "from demo import add; raise SystemExit(0 if add(2, 3) == 5 else 1)\""
+    )
+    assert run(
+        [
+            "--no-coverage",
+            "--mutate-all",
+            "--root",
+            str(tmp_path),
+            "--test-command",
+            command,
+            "src/demo.py",
+        ]
+    ) == 0
+    snapshot = tmp_path / ".metrics" / "mutate" / "demo.edn"
+    recorded = snapshot.read_text(encoding="utf-8")
+    capsys.readouterr()
+
+    code = run(["--use-existing-coverage", "--root", str(tmp_path), "src/demo.py"])
+    captured = capsys.readouterr()
+    assert code == 4
+    assert "No coverage data" in captured.err
+    assert snapshot.read_text(encoding="utf-8") == recorded
+
+
+def test_a_source_without_mutation_sites_is_inconclusive_and_preserves_snapshot(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def answer():\n    return 42\n", encoding="utf-8")
+    snapshot = tmp_path / ".metrics" / "mutate" / "demo.edn"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("keep me\n", encoding="utf-8")
+    assert run(["--no-coverage", "--root", str(tmp_path), "src/demo.py"]) == 4
+    assert snapshot.read_text(encoding="utf-8") == "keep me\n"
+
+
+def test_a_line_without_mutation_sites_is_inconclusive(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+    assert run(
+        ["--no-coverage", "--lines", "99", "--root", str(tmp_path), "src/demo.py"]
+    ) == 4
+    assert not (tmp_path / ".metrics" / "mutate" / "demo.edn").exists()
+
+
+def test_parse_error_is_inconclusive_and_preserves_snapshot(tmp_path, capsys):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def broken(:\n    return 1\n", encoding="utf-8")
+    snapshot = tmp_path / ".metrics" / "mutate" / "demo.edn"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("keep me\n", encoding="utf-8")
+
+    assert run(["--no-coverage", "--root", str(tmp_path), "src/demo.py"]) == 4
+    assert snapshot.read_text(encoding="utf-8") == "keep me\n"
+    assert "could not parse" in capsys.readouterr().err

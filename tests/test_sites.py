@@ -148,6 +148,123 @@ def test_python_typescript_and_rust_use_the_java_decisions(tmp_path):
     assert ("-", "") in {(site.original, site.mutant) for site in rust}
 
 
+def test_haskell_mutates_infix_not_booleans_constants_and_negation(tmp_path):
+    source = """\
+module Demo where
+
+choose ok x =
+  if not ok || x == 0
+    then False
+    else x + 1 > 0 && x /= 1
+
+negative = -1
+"""
+    sites = _sites(tmp_path, "src/Demo.hs", source)
+    pairs = {(site.original, site.mutant) for site in sites}
+    assert ("not", "") in pairs
+    assert ("||", "&&") in pairs
+    assert ("==", "/=") in pairs
+    assert ("False", "True") in pairs
+    assert ("+", "-") in pairs
+    assert (">", ">=") in pairs
+    assert ("&&", "||") in pairs
+    assert ("/=", "==") in pairs
+    assert ("-", "") in pairs
+    assert ("0", "1") in pairs
+    assert ("1", "0") in pairs
+    assert {site.namespace for site in sites} == {"Demo"}
+    assert {site.form_id for site in sites} == {"defn/choose", "defn/negative"}
+
+
+def test_haskell_does_not_mutate_an_operator_definition_name(tmp_path):
+    source = "module Demo where\nleft + right = left\n"
+    assert _sites(tmp_path, "src/Demo.hs", source) == []
+
+
+def test_haskell_does_not_mutate_literals_in_local_signatures(tmp_path):
+    source = """\
+module Demo where
+outer =
+  let marker :: Proxy 1
+      marker = undefined
+  in True
+"""
+    pairs = {(site.original, site.mutant) for site in _sites(tmp_path, "src/Demo.hs", source)}
+    assert pairs == {("True", "False")}
+
+
+def test_haskell_does_not_mutate_visible_type_applications(tmp_path):
+    source = """\
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeApplications #-}
+module Demo where
+import Data.Proxy
+number = Proxy @1
+flag = Proxy @'True
+"""
+    assert _sites(tmp_path, "src/Demo.hs", source) == []
+
+
+def test_d_mutates_runtime_operators_but_not_types_or_compile_time_constraints(tmp_path):
+    source = """\
+module demo;
+
+int choose(T)(int value, bool ok) if (is(T == int)) {
+  int[1] marker;
+  if (!ok || value == 0 || value is null) return -1;
+  return value + 1 > 0 && value != 1 ? value * 1 : value / 1;
+}
+"""
+    sites = _sites(tmp_path, "source/demo.d", source)
+    pairs = {(site.original, site.mutant) for site in sites}
+    assert {
+        ("!", ""),
+        ("||", "&&"),
+        ("==", "!="),
+        ("is", "!is"),
+        ("-", ""),
+        ("+", "-"),
+        (">", ">="),
+        ("&&", "||"),
+        ("!=", "=="),
+        ("*", "/"),
+        ("/", "*"),
+        ("0", "1"),
+        ("1", "0"),
+    } <= pairs
+    assert sum(site.original == "1" for site in sites) == 5
+    assert {site.namespace for site in sites} == {"demo"}
+    assert {site.form_id for site in sites} == {"defn/choose"}
+
+
+def test_d_private_function_uses_a_private_form_id(tmp_path):
+    sites = _sites(
+        tmp_path,
+        "source/demo.d",
+        "module demo;\nprivate bool hidden() { return false; }\n",
+    )
+    assert {site.form_id for site in sites} == {"defn-/hidden"}
+
+
+def test_d_scoped_private_functions_use_private_form_ids(tmp_path):
+    colon = _sites(
+        tmp_path,
+        "source/colon.d",
+        "module colon;\nprivate:\nbool hidden() { return false; }\n",
+    )
+    block = _sites(
+        tmp_path,
+        "source/block.d",
+        "module block;\nprivate {\nbool hidden() { return false; }\n}\n",
+    )
+    aggregate = _sites(
+        tmp_path,
+        "source/aggregate.d",
+        "module aggregate;\nclass Box {\nprivate:\nbool hidden() { return false; }\n}\n",
+    )
+    assert {site.form_id for site in colon + block + aggregate} == {"defn-/hidden"}
+
+
 def test_python_private_and_class_namespace(tmp_path):
     source = """class Board:
     def place(self, x):
