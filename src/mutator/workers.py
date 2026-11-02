@@ -44,6 +44,7 @@ SKIP_LINK = frozenset(
         ".clj-kondo",
         ".stack-work",
         ".gradle",
+        ".dub",
     }
 )
 
@@ -67,6 +68,9 @@ CONFIGS = (
     "cabal.project.local",
     "stack.yaml",
     "stack.yaml.lock",
+    "dub.json",
+    "dub.sdl",
+    "dub.selections.json",
     "pyproject.toml",
     "pytest.ini",
     "setup.cfg",

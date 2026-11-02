@@ -310,6 +310,26 @@ def test_haskell_build_trees_are_private_to_each_worker(tmp_path):
         delete_tree(base)
 
 
+def test_dub_build_tree_and_recipes_are_private_to_each_worker(tmp_path):
+    source = tmp_path / "source" / "demo.d"
+    source.parent.mkdir(parents=True)
+    source.write_text("module demo;\nint value() { return 1; }\n", encoding="utf-8")
+    (tmp_path / "dub.json").write_text('{"name":"demo"}\n', encoding="utf-8")
+    (tmp_path / "dub.selections.json").write_text('{"versions":{}}\n', encoding="utf-8")
+    (tmp_path / ".dub").mkdir()
+    base = tmp_path / "target" / "mutation-workers" / "run-test"
+    workers = create_workers(base, tmp_path, "source/demo.d", source.read_bytes(), 1)
+    try:
+        worker = workers[0]
+        assert not (worker / ".dub").exists()
+        assert not (worker / "dub.json").is_symlink()
+        assert not (worker / "dub.selections.json").is_symlink()
+        assert ".dub" in SKIP_LINK
+        assert {"dub.json", "dub.sdl", "dub.selections.json"} <= set(CONFIGS)
+    finally:
+        delete_tree(base)
+
+
 def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):
     source = tmp_path / "src" / "demo.py"
     source.parent.mkdir()

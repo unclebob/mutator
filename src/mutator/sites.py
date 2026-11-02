@@ -1,8 +1,8 @@
 """Find mutation sites.
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
-one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, Python, and
-Haskell use the same decisions as Java, spelled in that language. TypeScript also
+one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, Python,
+Haskell, and D use the same decisions as Java, spelled in that language. TypeScript also
 mutates `??` to `||` and `?.` to `.` (removed on a call or index). JavaScript
 files use the TypeScript rules.
 """
@@ -29,6 +29,8 @@ _BINARY = {
     "??": "||",
     "and": "or",
     "or": "and",
+    "is": "!is",
+    "!is": "is",
 }
 
 _BINARY_PARENTS = {
@@ -37,6 +39,13 @@ _BINARY_PARENTS = {
     "comparison_operator",
     "boolean_operator",
     "infix",
+    "add_expression",
+    "mul_expression",
+    "rel_expression",
+    "equal_expression",
+    "identity_expression",
+    "logical_and_expression",
+    "logical_or_expression",
 }
 
 _UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator", "negation"}
@@ -128,7 +137,7 @@ def _category(token: str) -> str:
         return "arithmetic"
     if token in {">", ">=", "<", "<="}:
         return "comparison"
-    if token in {"==", "!=", "/=", "===", "!=="}:
+    if token in {"==", "!=", "/=", "===", "!==", "is", "!is"}:
         return "equality"
     if token in {"&&", "||", "??", "and", "or"}:
         return "logical"
@@ -370,6 +379,20 @@ def _visit_node(node, data: bytes, language: str, found: list[RawSite]) -> None:
         return
     if language == "haskell" and _inside_node(node, "signature"):
         return
+    if language == "d" and _inside_any_node(
+        node,
+        {
+            "type",
+            "template_parameters",
+            "constraint",
+            "static_if_condition",
+            "version_condition",
+            "debug_condition",
+            "is_expression",
+            "traits_expression",
+        },
+    ):
+        return
     if node.child_count == 0:
         _visit_leaf(node, data, language, found)
     else:
@@ -380,6 +403,15 @@ def _inside_node(node, node_type: str) -> bool:
     current = node.parent
     while current is not None:
         if current.type == node_type:
+            return True
+        current = current.parent
+    return False
+
+
+def _inside_any_node(node, node_types: set[str]) -> bool:
+    current = node.parent
+    while current is not None:
+        if current.type in node_types:
             return True
         current = current.parent
     return False

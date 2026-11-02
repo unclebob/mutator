@@ -184,3 +184,23 @@ def test_haskell_test_plans_cover_cabal_projects_stack_and_packages(tmp_path):
         ["cabal", "test"],
         package.resolve(),
     )
+
+
+def test_d_test_plan_uses_the_nearest_dub_package(tmp_path):
+    package = tmp_path / "package"
+    source = package / "source" / "demo.d"
+    source.parent.mkdir(parents=True)
+    source.write_text("module demo;\n", encoding="utf-8")
+    (package / "dub.sdl").write_text('name "demo"\n', encoding="utf-8")
+    assert plan_command(tmp_path, source, "d", None) == (
+        ["dub", "test"],
+        package.resolve(),
+    )
+
+    standalone = tmp_path / "standalone" / "source" / "demo.d"
+    standalone.parent.mkdir(parents=True)
+    standalone.write_text("module demo;\n", encoding="utf-8")
+    assert plan_command(tmp_path, standalone, "d", None) == (
+        ["dub", "test"],
+        tmp_path.resolve(),
+    )

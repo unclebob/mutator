@@ -149,3 +149,20 @@ def test_haskell_coverage_uses_package_and_refuses_ambiguity(tmp_path):
 
 def test_empty_hpc_report_key_belongs_to_no_package():
     assert not _package_owns_report("demo", "")
+
+
+def test_d_coverage_uses_compiler_listing_hits(tmp_path):
+    source = tmp_path / "source" / "demo.d"
+    source.parent.mkdir(parents=True)
+    source.write_text("module demo;\nint choose(bool ok) { return ok ? 1 : 0; }\n", encoding="utf-8")
+    report = tmp_path / "target" / "coverage" / "d" / "demo.lst"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        "       |module demo;\n"
+        "      1|int choose(bool ok) {\n"
+        "0000000|  return ok ? 1 : 0;\n"
+        "       |}\n"
+        "source/demo.d is 50% covered\n",
+        encoding="utf-8",
+    )
+    assert covered_lines(tmp_path, source, "d") == {2}

@@ -193,6 +193,47 @@ outer =
     assert pairs == {("True", "False")}
 
 
+def test_d_mutates_runtime_operators_but_not_types_or_compile_time_constraints(tmp_path):
+    source = """\
+module demo;
+
+int choose(T)(int value, bool ok) if (is(T == int)) {
+  int[1] marker;
+  if (!ok || value == 0 || value is null) return -1;
+  return value + 1 > 0 && value != 1 ? value * 1 : value / 1;
+}
+"""
+    sites = _sites(tmp_path, "source/demo.d", source)
+    pairs = {(site.original, site.mutant) for site in sites}
+    assert {
+        ("!", ""),
+        ("||", "&&"),
+        ("==", "!="),
+        ("is", "!is"),
+        ("-", ""),
+        ("+", "-"),
+        (">", ">="),
+        ("&&", "||"),
+        ("!=", "=="),
+        ("*", "/"),
+        ("/", "*"),
+        ("0", "1"),
+        ("1", "0"),
+    } <= pairs
+    assert sum(site.original == "1" for site in sites) == 5
+    assert {site.namespace for site in sites} == {"demo"}
+    assert {site.form_id for site in sites} == {"defn/choose"}
+
+
+def test_d_private_function_uses_a_private_form_id(tmp_path):
+    sites = _sites(
+        tmp_path,
+        "source/demo.d",
+        "module demo;\nprivate bool hidden() { return false; }\n",
+    )
+    assert {site.form_id for site in sites} == {"defn-/hidden"}
+
+
 def test_python_private_and_class_namespace(tmp_path):
     source = """class Board:
     def place(self, x):

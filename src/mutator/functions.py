@@ -62,6 +62,8 @@ def is_private(language: str, name: str, source: str, start: int, end: int) -> b
         return re.match(r"pub\s", header) is None
     if language == "typescript":
         return _typescript_private(name, header)
+    if language == "d":
+        return bool(re.search(r"\bprivate\b", header))
     return False
 
 

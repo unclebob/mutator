@@ -240,6 +240,22 @@ def _haskell_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return ["cabal", "test"], directory
 
 
+def _d_directory(root: Path, source: Path) -> Path:
+    current = source.resolve().parent
+    stop = root.resolve()
+    while True:
+        if (current / "dub.json").is_file() or (current / "dub.sdl").is_file():
+            return current
+        if current == stop or current.parent == current:
+            return stop
+        current = current.parent
+
+
+def _d_plan(root: Path, source: Path) -> tuple[Command, Path]:
+    directory = _d_directory(root, source)
+    return ["dub", "test"], directory
+
+
 def _python_plan(root: Path, source: Path) -> tuple[Command, Path]:
     directory = _nearest_marker(source, root, ("pyproject.toml", "pytest.ini", "setup.cfg"))
     return _python_command(directory), directory
@@ -252,6 +268,7 @@ _PLANS = {
     "typescript": _typescript_plan,
     "rust": _rust_plan,
     "haskell": _haskell_plan,
+    "d": _d_plan,
     "python": _python_plan,
 }
 
