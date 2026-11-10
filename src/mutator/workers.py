@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from queue import Empty, Queue
 from threading import Lock
 
@@ -44,6 +45,37 @@ SKIP_LINK = frozenset(
         ".gradle",
     }
 )
+
+# These names usually hold build output, but a project may keep source under one of
+# them, such as src/build in Connector/J. Such a directory is linked when git tracks it.
+OUTPUT_DIRS = frozenset({"target", "dist", "build", "out", "coverage"})
+
+
+def tracked_directories(root: Path) -> frozenset[str]:
+    """Directories under root that hold files git tracks, relative to root."""
+
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=root, capture_output=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return frozenset()
+    found = set()
+    for name in listed.decode("utf-8", "surrogateescape").split("\0"):
+        parent = PurePosixPath(name).parent
+        while parent != PurePosixPath("."):
+            found.add(parent.as_posix())
+            parent = parent.parent
+    return frozenset(found)
+
+
+def _skipped(child: Path, root: Path, tracked: frozenset[str]) -> bool:
+    if child.name not in SKIP_LINK:
+        return False
+    if child.name not in OUTPUT_DIRS:
+        return True
+    relative = child.relative_to(root).as_posix()
+    return relative == "target" or relative not in tracked
 
 CONFIGS = (
     "deps.edn",
@@ -119,11 +151,13 @@ def _copy_configs(worker: Path, root: Path, relative: str) -> None:
         (worker / name).write_bytes(source.read_bytes())
 
 
-def _link_children(worker_dir: Path, real_dir: Path, skip: set[str]) -> None:
+def _link_children(
+    worker_dir: Path, real_dir: Path, skip: set[str], root: Path, tracked: frozenset[str]
+) -> None:
     if not real_dir.is_dir():
         return
     for child in real_dir.iterdir():
-        if child.name in skip or child.name in SKIP_LINK:
+        if child.name in skip or _skipped(child, root, tracked):
             continue
         destination = worker_dir / child.name
         if destination.exists() or destination.is_symlink():
@@ -224,7 +258,7 @@ def importers_of(root: Path, relative: str) -> set[str]:
     return {path.relative_to(root_resolved).as_posix() for path in found}
 
 
-def _expand_directory(link: Path, real_dir: Path) -> None:
+def _expand_directory(link: Path, real_dir: Path, root: Path, tracked: frozenset[str]) -> None:
     """Replace a linked directory so a copied module is not written through it."""
 
     if not real_dir.is_dir():
@@ -232,19 +266,19 @@ def _expand_directory(link: Path, real_dir: Path) -> None:
     link.unlink()
     link.mkdir()
     for child in real_dir.iterdir():
-        if child.name in SKIP_LINK:
+        if _skipped(child, root, tracked):
             continue
         symlink(link / child.name, child)
 
 
-def _copy_importer(worker: Path, root: Path, relative: str) -> None:
+def _copy_importer(worker: Path, root: Path, relative: str, tracked: frozenset[str]) -> None:
     real = root
     current = worker
     for segment in relative.split("/")[:-1]:
         real = real / segment
         current = current / segment
         if current.is_symlink():
-            _expand_directory(current, real)
+            _expand_directory(current, real, root, tracked)
         elif not current.exists():
             current.mkdir(parents=True)
     destination = worker / relative
@@ -255,13 +289,15 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
     destination.write_bytes((root / relative).read_bytes())
 
 
-def _overlay(worker: Path, root: Path, relative: str, original: bytes) -> None:
+def _overlay(
+    worker: Path, root: Path, relative: str, original: bytes, tracked: frozenset[str]
+) -> None:
     """Real directories along the source path. Every sibling is a link."""
 
     segments = tuple(relative.split("/"))
     for index, _segment in enumerate(segments[:-1]):
         rel_dir = Path(*segments[: index + 1])
-        _link_children(worker / rel_dir, root / rel_dir, {segments[index + 1]})
+        _link_children(worker / rel_dir, root / rel_dir, {segments[index + 1]}, root, tracked)
     destination = worker.joinpath(*segments)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_bytes(original)
@@ -273,14 +309,15 @@ def create_workers(
     created = []
     first = relative.split("/", 1)[0]
     importers = importers_of(root, relative)
+    tracked = tracked_directories(root)
     for index in range(count):
         worker = base / f"worker-{index}"
         worker.mkdir(parents=True, exist_ok=True)
         _copy_configs(worker, root, relative)
-        _link_children(worker, root, {first})
-        _overlay(worker, root, relative, original)
+        _link_children(worker, root, {first}, root, tracked)
+        _overlay(worker, root, relative, original, tracked)
         for importer in importers:
-            _copy_importer(worker, root, importer)
+            _copy_importer(worker, root, importer, tracked)
         created.append(worker)
     return created
 

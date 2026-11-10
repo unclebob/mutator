@@ -209,6 +209,32 @@ def test_workers_keep_a_private_copy_and_link_the_rest(tmp_path):
     assert not base.exists()
 
 
+def test_a_build_directory_git_tracks_is_source_and_is_linked(tmp_path):
+    source = tmp_path / "src" / "main" / "Demo.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("class Demo {}\n", encoding="utf-8")
+    generator = tmp_path / "src" / "build" / "java" / "Gen.java"
+    generator.parent.mkdir(parents=True)
+    generator.write_text("class Gen {}\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    module_output = tmp_path / "src" / "main" / "target" / "Demo.class"
+    module_output.parent.mkdir()
+    module_output.write_text("compiled", encoding="utf-8")
+    output = tmp_path / "build" / "Demo.class"
+    output.parent.mkdir()
+    output.write_text("compiled", encoding="utf-8")
+
+    base = new_run_dir(tmp_path)
+    try:
+        worker = create_workers(base, tmp_path, "src/main/Demo.java", source.read_bytes(), 1)[0]
+        assert (worker / "src" / "build" / "java" / "Gen.java").read_text(encoding="utf-8") == "class Gen {}\n"
+        assert not (worker / "src" / "main" / "target").exists()
+        assert not (worker / "build").exists()
+    finally:
+        delete_tree(base)
+
+
 def test_node_imports_the_worker_copy_through_a_relative_specifier(tmp_path):
     source = tmp_path / "src" / "find.mjs"
     source.parent.mkdir()
