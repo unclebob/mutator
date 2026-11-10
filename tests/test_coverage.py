@@ -96,3 +96,43 @@ def test_go_profile_does_not_cross_files(tmp_path):
     profile.write_text("mode: set\na/b/widget.go:2.1,2.2 1 1\n", encoding="utf-8")
     assert covered_lines(tmp_path, short, "go") is None
     assert covered_lines(tmp_path, long, "go") == {2}
+
+
+def _go_module(module_dir, module, profile_text):
+    module_dir.mkdir(parents=True, exist_ok=True)
+    (module_dir / "go.mod").write_text(f"module {module}\n\ngo 1.21\n", encoding="utf-8")
+    profile = module_dir / "target" / "coverage" / "go" / "coverage.out"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(profile_text, encoding="utf-8")
+
+
+def _go_source(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("package main\nfunc main() {}\n", encoding="utf-8")
+    return path
+
+
+def test_go_profile_keyed_by_import_path_marks_hit_lines(tmp_path):
+    # `go test -coverprofile` names files by module import path, not by disk path.
+    _go_module(
+        tmp_path,
+        "github.com/acme/tool",
+        "mode: set\n"
+        "github.com/acme/tool/cmd/tool/main.go:2.1,3.2 1 1\n"
+        "github.com/acme/tool/cmd/tool/main.go:4.1,4.2 1 0\n"
+        "github.com/acme/tool/main.go:7.1,7.2 1 1\n",
+    )
+    nested = _go_source(tmp_path / "cmd" / "tool" / "main.go")
+    top = _go_source(tmp_path / "main.go")
+    assert covered_lines(tmp_path, nested, "go") == {2, 3}
+    assert covered_lines(tmp_path, top, "go") == {7}
+
+
+def test_go_profile_of_a_module_in_a_subdirectory(tmp_path):
+    _go_module(
+        tmp_path / "svc",
+        "example.com/api",
+        "mode: set\nexample.com/api/calc/calc.go:4.2,6.1 1 1\n",
+    )
+    source = _go_source(tmp_path / "svc" / "calc" / "calc.go")
+    assert covered_lines(tmp_path, source, "go") == {4, 5, 6}
