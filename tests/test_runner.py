@@ -131,7 +131,7 @@ def test_a_go_package_path_is_one_argument(tmp_path):
     command, directory = plan_command(root, source, "go", None)
     assert command == ["go", "test", "-count=1", "./a;echo no"]
     assert directory == root
-    echoed = CommandRunner().run(["/bin/echo", command[-1]], directory, None)
+    echoed = CommandRunner().run(["/usr/bin/env", "echo", command[-1]], directory, None)
     assert echoed.code == 0
     assert echoed.output.strip() == "./a;echo no"
 
