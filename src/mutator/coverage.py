@@ -133,10 +133,19 @@ def _covered_from_pairs(lines: dict[int, tuple[int, int]] | None) -> set[int] | 
     return {number for number, (covered, _total) in lines.items() if covered > 0}
 
 
-def _jacoco_paths(root: Path) -> list[Path]:
-    paths = [root / "target" / "site" / "jacoco" / "jacoco.xml"]
-    paths.extend(root.glob("*/target/site/jacoco/jacoco.xml"))
-    paths.extend(root.glob("*/*/target/site/jacoco/jacoco.xml"))
+_JACOCO_REPORTS = (
+    "target/site/jacoco/jacoco.xml",
+    "build/reports/jacoco/test/jacocoTestReport.xml",
+)
+
+
+def _jacoco_paths(root: Path, crapper) -> list[Path]:
+    reports = getattr(crapper.coverage, "_JACOCO_REPORTS", _JACOCO_REPORTS)
+    paths: list[Path] = []
+    for report in reports:
+        paths.append(root / report)
+        paths.extend(root.glob(f"*/{report}"))
+        paths.extend(root.glob(f"*/*/{report}"))
     return paths
 
 
@@ -185,7 +194,7 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
     crapper = ensure_crapper()
     found: dict[str, set[int]] = {}
     seen: set[Path] = set()
-    for path in _jacoco_paths(root):
+    for path in _jacoco_paths(root, crapper):
         if not path.is_file():
             continue
         resolved = path.resolve()

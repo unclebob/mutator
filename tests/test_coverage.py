@@ -24,6 +24,28 @@ def test_jacoco_marks_lines_with_covered_instructions(tmp_path):
     assert covered_lines(tmp_path, source, "java") == {3, 5}
 
 
+def test_jacoco_reads_a_gradle_report_in_a_subproject(tmp_path):
+    report = tmp_path / "app" / "build" / "reports" / "jacoco" / "test" / "jacocoTestReport.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """<?xml version="1.0"?>
+<report name="demo">
+  <package name="demo">
+    <sourcefile name="A.java">
+      <line nr="4" mi="0" ci="3" mb="1" cb="1"/>
+      <line nr="5" mi="2" ci="0" mb="0" cb="0"/>
+    </sourcefile>
+  </package>
+</report>
+""",
+        encoding="utf-8",
+    )
+    source = tmp_path / "app" / "src" / "main" / "java" / "demo" / "A.java"
+    source.parent.mkdir(parents=True)
+    source.write_text("package demo;\nclass A {}\n", encoding="utf-8")
+    assert covered_lines(tmp_path, source, "java") == {4}
+
+
 def test_go_profile_marks_hit_lines(tmp_path):
     profile = tmp_path / "target" / "coverage" / "go" / "coverage.out"
     profile.parent.mkdir(parents=True)

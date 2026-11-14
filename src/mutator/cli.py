@@ -124,7 +124,7 @@ Exit codes:
 
 Coverage, when it is produced, uses the same commands as crapper:
   Clojure      clj -M:cov --lcov
-  Java         Maven JaCoCo
+  Java         Maven or Gradle JaCoCo
   Go           go test ./... -coverprofile=...
   TypeScript   npm run coverage, Vitest, or c8
   Rust         cargo llvm-cov or cargo tarpaulin

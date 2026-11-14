@@ -153,3 +153,57 @@ def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     result = CommandRunner().run(command, worker, 5)
     assert result.code == 0
     assert result.output.strip() == "worker"
+
+
+def _java_source(module):
+    source = module / "src" / "main" / "java" / "demo" / "A.java"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("package demo;\nclass A {}\n", encoding="utf-8")
+    return source
+
+
+def test_java_runs_maven_beside_a_pom(tmp_path):
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    source = _java_source(tmp_path)
+    command, cwd = plan_command(tmp_path, source, "java", None)
+    assert command == ["mvn", "-q", "test", "-DexcludeTags=no-mutate"]
+    assert cwd == tmp_path.resolve()
+
+
+def test_java_runs_gradle_without_a_wrapper(tmp_path):
+    (tmp_path / "build.gradle.kts").write_text("", encoding="utf-8")
+    source = _java_source(tmp_path)
+    command, cwd = plan_command(tmp_path, source, "java", None)
+    assert command == ["gradle", "test"]
+    assert cwd == tmp_path.resolve()
+
+
+def test_java_prefers_the_build_wrapper_from_a_subproject(tmp_path):
+    (tmp_path / "settings.gradle").write_text("", encoding="utf-8")
+    _executable(tmp_path / "gradlew")
+    module = tmp_path / "app"
+    module.mkdir()
+    (module / "build.gradle").write_text("", encoding="utf-8")
+    source = _java_source(module)
+    command, cwd = plan_command(tmp_path, source, "java", None)
+    assert command == [str(tmp_path.resolve() / "gradlew"), "test"]
+    assert cwd == module.resolve()
+
+
+def test_java_module_with_pom_and_gradle_uses_maven(tmp_path):
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    (tmp_path / "build.gradle").write_text("", encoding="utf-8")
+    source = _java_source(tmp_path)
+    command, _cwd = plan_command(tmp_path, source, "java", None)
+    assert command[0] == "mvn"
+
+
+def test_java_uses_the_closer_build_file(tmp_path):
+    (tmp_path / "pom.xml").write_text("<project/>", encoding="utf-8")
+    module = tmp_path / "app"
+    module.mkdir()
+    (module / "build.gradle").write_text("", encoding="utf-8")
+    source = _java_source(module)
+    command, cwd = plan_command(tmp_path, source, "java", None)
+    assert command == ["gradle", "test"]
+    assert cwd == module.resolve()

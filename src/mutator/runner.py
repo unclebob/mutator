@@ -197,7 +197,29 @@ def _clojure_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return _clojure_command(directory), directory
 
 
+def _gradle_module(root: Path, source: Path) -> Path | None:
+    found = [nearest(source, name, root) for name in ("build.gradle", "build.gradle.kts")]
+    modules = [module for module in found if module is not None]
+    if not modules:
+        return None
+    module = max(modules, key=lambda directory: len(directory.parts))
+    maven = nearest(source, "pom.xml", root)
+    if maven is not None and len(maven.parts) >= len(module.parts):
+        return None
+    return module
+
+
+def _gradle_command(root: Path, module: Path) -> list[str]:
+    wrapper = nearest(module, "gradlew", root)
+    if wrapper is None:
+        return ["gradle", "test"]
+    return [str(wrapper / "gradlew"), "test"]
+
+
 def _java_plan(root: Path, source: Path) -> tuple[Command, Path]:
+    module = _gradle_module(root, source)
+    if module is not None:
+        return _gradle_command(root, module), module
     directory = _nearest_marker(source, root, ("pom.xml",))
     return ["mvn", "-q", "test", "-DexcludeTags=no-mutate"], directory
 

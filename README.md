@@ -106,11 +106,13 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | Language | Command | Where |
 | --- | --- | --- |
 | Clojure | `clj -M:spec --tag ~no-mutate` when Speclj is on the classpath, otherwise `clj -M:test` or `bb spec` | nearest `deps.edn` or `bb.edn` |
-| Java | `mvn -q test -DexcludeTags=no-mutate` | nearest `pom.xml` |
+| Java | `mvn -q test -DexcludeTags=no-mutate`, or `gradlew test` (`gradle test` without a wrapper) when the nearest build file is `build.gradle` or `build.gradle.kts` | nearest `pom.xml` or Gradle build file; Maven wins when a module has both |
 | Go | `go test -count=1` of the file's package | nearest `go.mod` |
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
+
+Gradle has no counterpart to `-DexcludeTags`. To skip `no-mutate` tests on Gradle, pass a `--test-command` your build understands.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
