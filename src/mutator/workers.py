@@ -4,12 +4,16 @@ Each worker is a directory under target/mutation-workers. Project files are
 linked in. The file under test is a private copy, so workers can mutate it at
 the same time without touching the original tree. The overlay is removed when
 the file's mutants finish.
+
+Windows makes a symlink only with a privilege, so there a directory is linked
+with a junction and a file with a hard link. Neither needs one.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -88,15 +92,47 @@ def new_run_dir(root: Path) -> Path:
 
 def symlink(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
-    if link.is_symlink() or link.exists():
+    if is_link(link) or link.exists():
         link.unlink()
+    if os.name == "nt":
+        _windows_link(link, target.resolve())
+        return
     link.symlink_to(target.resolve())
+
+
+def _windows_link(link: Path, target: Path) -> None:
+    import _winapi
+
+    if target.is_dir():
+        _winapi.CreateJunction(str(target), str(link))
+        return
+    os.link(target, link)
+
+
+def is_link(path: Path) -> bool:
+    """A symlink, or on Windows a junction or a hard link.
+
+    A worker writes every private copy fresh, so a worker file with a second
+    name is a hard link into the project.
+    """
+
+    try:
+        status = path.lstat()
+    except OSError:
+        return False
+    if stat.S_ISLNK(status.st_mode):
+        return True
+    if os.name != "nt":
+        return False
+    if status.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT:
+        return True
+    return stat.S_ISREG(status.st_mode) and status.st_nlink > 1
 
 
 def delete_tree(path: Path) -> None:
     """Remove a worker tree without following a link into the real project."""
 
-    if path.is_symlink():
+    if is_link(path):
         path.unlink()
         return
     if not path.exists():
@@ -126,7 +162,7 @@ def _link_children(worker_dir: Path, real_dir: Path, skip: set[str]) -> None:
         if child.name in skip or child.name in SKIP_LINK:
             continue
         destination = worker_dir / child.name
-        if destination.exists() or destination.is_symlink():
+        if destination.exists() or is_link(destination):
             continue
         symlink(destination, child)
 
@@ -243,12 +279,12 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
     for segment in relative.split("/")[:-1]:
         real = real / segment
         current = current / segment
-        if current.is_symlink():
+        if is_link(current):
             _expand_directory(current, real)
         elif not current.exists():
             current.mkdir(parents=True)
     destination = worker / relative
-    if destination.is_symlink():
+    if is_link(destination):
         destination.unlink()
     elif destination.exists():
         return
