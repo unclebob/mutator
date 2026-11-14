@@ -288,6 +288,37 @@ def test_a_mutation_run_leaves_the_project_tree_unchanged(tmp_path):
     assert [item for item in (tmp_path / "target").rglob("*") if item.is_file()] == []
 
 
+def test_an_edit_saved_during_a_run_is_kept(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def place(x):\n    return x > 0\n", encoding="utf-8")
+    edited = "def place(x):\n    return x > 0\n\n\ndef keep(x):\n    return x\n"
+
+    class EditDuringRun:
+        verbose = False
+
+        def run(self, command, cwd, timeout):
+            if timeout is not None:
+                path.write_text(edited, encoding="utf-8")
+            return CommandResult(code=1 if timeout else 0, timed_out=False, seconds=0.01, output="")
+
+    mutate_file(
+        path,
+        tmp_path,
+        runner=EditDuringRun(),
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        max_workers=1,
+    )
+    assert path.read_text(encoding="utf-8") == edited
+
+
 def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):
     source = tmp_path / "src" / "demo.py"
     source.parent.mkdir()
