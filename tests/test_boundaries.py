@@ -881,7 +881,7 @@ def test_snapshots_keep_other_files_empty_directories_and_odd_records(tmp_path):
         + "\n",
         encoding="utf-8",
     )
-    foreign = mutation_id("b.go", "demo", "defn/Stop", 1, 2, "+", "-")
+    foreign = mutation_id("b.go", "demo", "defn/Stop", 0, 1, 2, "+", "-")
     snapshot_path(tmp_path, "demo").write_text(
         dumps(
             {

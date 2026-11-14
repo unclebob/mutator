@@ -47,7 +47,7 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 {:version 1
  :source "src/demo/board.py"
  :namespace "demo.board.Board"
- :outcomes {"[\"src/demo/board.py\",\"demo.board.Board\",\"defn/place\",10,11,\">\",\">=\"]" :survived}
+ :outcomes {"[\"src/demo/board.py\",\"demo.board.Board\",\"defn/place\",0,10,11,\">\",\">=\"]" :survived}
  :forms [{:id "defn/place"
           :kind "defn"
           :file "src/demo/board.py"
