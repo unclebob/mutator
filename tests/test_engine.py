@@ -209,6 +209,53 @@ def test_workers_keep_a_private_copy_and_link_the_rest(tmp_path):
     assert not base.exists()
 
 
+def test_go_embedded_files_are_real_files_in_the_worker(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.com/demo\n\ngo 1.22\n", encoding="utf-8")
+    package = tmp_path / "store"
+    (package / "sub").mkdir(parents=True)
+    (package / "schema.sql").write_text("select 1;\n", encoding="utf-8")
+    (package / "sub" / "a.txt").write_text("a\n", encoding="utf-8")
+    (package / "assets" / "deep").mkdir(parents=True)
+    (package / "assets" / "deep" / "b.txt").write_text("b\n", encoding="utf-8")
+    (package / "notes.md").write_text("not embedded\n", encoding="utf-8")
+    (package / "embed.go").write_text(
+        "package store\n\n"
+        'import "embed"\n\n'
+        "//go:embed schema.sql\n"
+        "var schema string\n\n"
+        '//go:embed "sub/*.txt" all:assets\n'
+        "var files embed.FS\n",
+        encoding="utf-8",
+    )
+    source = package / "store.go"
+    source.write_text("package store\n\nfunc Positive(x int) bool { return x > 0 }\n", encoding="utf-8")
+
+    base = new_run_dir(tmp_path)
+    try:
+        worker = create_workers(base, tmp_path, "store/store.go", source.read_bytes(), 1)[0]
+        for relative in ("store/schema.sql", "store/sub/a.txt", "store/assets/deep/b.txt"):
+            path = worker / relative
+            assert path.is_file()
+            parts = path.relative_to(worker).parts
+            for index in range(1, len(parts) + 1):
+                assert not worker.joinpath(*parts[:index]).is_symlink(), relative
+        assert (worker / "store" / "notes.md").is_symlink()
+        if shutil.which("go"):
+            completed = subprocess.run(
+                ["go", "build", "./..."],
+                cwd=worker,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            assert completed.returncode == 0, completed.stderr
+    finally:
+        delete_tree(base)
+
+    assert (package / "schema.sql").read_text(encoding="utf-8") == "select 1;\n"
+    assert not base.exists()
+
+
 def test_node_imports_the_worker_copy_through_a_relative_specifier(tmp_path):
     source = tmp_path / "src" / "find.mjs"
     source.parent.mkdir()

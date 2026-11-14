@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -255,6 +256,45 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
     destination.write_bytes((root / relative).read_bytes())
 
 
+_GO_EMBED = re.compile(r"^//go:embed\s+(.+)$", re.MULTILINE)
+
+
+def _embed_patterns(directory: Path) -> list[str]:
+    patterns = []
+    for source in sorted(directory.glob("*.go")):
+        try:
+            text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        for line in _GO_EMBED.findall(text):
+            try:
+                patterns.extend(shlex.split(line))
+            except ValueError:
+                continue
+    return patterns
+
+
+def go_embeds(root: Path, relative: str) -> set[str]:
+    """Files that `//go:embed` in the package of ``relative`` names.
+
+    Go refuses to embed a symlink ("cannot embed irregular file") or a file
+    under a linked directory, so these have to be real files in the worker.
+    """
+
+    directory = (root / relative).parent
+    root_resolved = root.resolve()
+    found: set[str] = set()
+    for pattern in _embed_patterns(directory):
+        pattern = pattern.removeprefix("all:")
+        for match in directory.glob(pattern):
+            paths = match.rglob("*") if match.is_dir() else [match]
+            for path in paths:
+                if path.is_file():
+                    found.add(path.resolve().relative_to(root_resolved).as_posix())
+    return found
+
+
+
 def _overlay(worker: Path, root: Path, relative: str, original: bytes) -> None:
     """Real directories along the source path. Every sibling is a link."""
 
@@ -273,6 +313,8 @@ def create_workers(
     created = []
     first = relative.split("/", 1)[0]
     importers = importers_of(root, relative)
+    if relative.endswith(".go"):
+        importers |= go_embeds(root, relative)
     for index in range(count):
         worker = base / f"worker-{index}"
         worker.mkdir(parents=True, exist_ok=True)
