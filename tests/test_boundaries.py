@@ -338,9 +338,10 @@ def test_commands_follow_the_nearest_project_and_a_killed_process(tmp_path):
     assert directory == sub
     assert command[-2:] == ["-m", "pytest"]
 
-    result = CommandRunner().run(f"{sys.executable} -c 'import time; time.sleep(30)'", tmp_path, 0.4)
+    result = CommandRunner().run(f'"{sys.executable}" -c "import time; time.sleep(30)"', tmp_path, 0.4)
     assert result.timed_out is True
     assert result.code == 124
+    assert result.seconds < 10
 
 
 def test_a_process_without_a_return_code_counts_as_failure(monkeypatch, tmp_path):

@@ -10,6 +10,15 @@ from mutator.runner import CommandResult
 from mutator.workers import create_workers, delete_tree, new_run_dir, worker_count
 
 
+def shared(worker, project, relative):
+    """The worker entry is the project's own file or directory, not a copy.
+
+    A symlink, a Windows junction, and a Windows hard link all pass.
+    """
+
+    return os.path.samefile(worker / relative, project / relative)
+
+
 class FakeRunner:
     def __init__(self):
         self.verbose = False
@@ -190,13 +199,13 @@ def test_workers_keep_a_private_copy_and_link_the_rest(tmp_path):
         for worker in workers:
             private = worker / "src" / "demo.py"
             assert private.is_file()
-            assert not private.is_symlink()
+            assert not shared(worker, tmp_path, "src/demo.py")
             assert private.read_bytes() == original
-            assert (worker / "src" / "other.py").is_symlink()
-            assert (worker / "tests").is_symlink()
+            assert shared(worker, tmp_path, "src/other.py")
+            assert shared(worker, tmp_path, "tests")
             assert (worker / "tests" / "keep.txt").read_text(encoding="utf-8") == "keep"
             assert (worker / "pyproject.toml").is_file()
-            assert not (worker / "pyproject.toml").is_symlink()
+            assert not shared(worker, tmp_path, "pyproject.toml")
         (workers[0] / "src" / "demo.py").write_text("changed\n", encoding="utf-8")
         assert workers[1].joinpath("src/demo.py").read_bytes() == original
         assert source.read_bytes() == original
@@ -230,12 +239,11 @@ def test_node_imports_the_worker_copy_through_a_relative_specifier(tmp_path):
         private = worker / "src" / "find.mjs"
         private.write_text('export const value = "worker"\n', encoding="utf-8")
         for relative in ("src/find.test.mjs", "src/main.mjs", "src/app.test.mjs", "tests/use.mjs"):
-            copied = worker / relative
-            assert copied.is_file()
-            assert not copied.is_symlink()
-        assert (worker / "src" / "notes.mjs").is_symlink()
-        assert not (worker / "tests").is_symlink()
-        assert (worker / "tests" / "other.test.mjs").is_symlink()
+            assert (worker / relative).is_file()
+            assert not shared(worker, tmp_path, relative)
+        assert shared(worker, tmp_path, "src/notes.mjs")
+        assert not shared(worker, tmp_path, "tests")
+        assert shared(worker, tmp_path, "tests/other.test.mjs")
         if shutil.which("node"):
             for script in ("src/find.test.mjs", "tests/use.mjs"):
                 completed = subprocess.run(
