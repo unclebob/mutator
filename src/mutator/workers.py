@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import sys
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -93,20 +94,39 @@ def symlink(link: Path, target: Path) -> None:
     link.symlink_to(target.resolve())
 
 
-def delete_tree(path: Path) -> None:
-    """Remove a worker tree without following a link into the real project."""
+def delete_tree(path: Path, attempts: int = 20, sleep=time.sleep) -> None:
+    """Remove a worker tree without following a link into the real project.
 
+    Gradle can still be flushing a test report when the client exits, so a
+    directory that looked empty can gain a file before ``rmdir``. Retry the
+    walk instead of aborting the file's mutation run.
+    """
+
+    last: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            _delete_once(path)
+            return
+        except OSError as error:
+            last = error
+            if attempt + 1 < attempts:
+                sleep(0.25 * (attempt + 1))
+    if last is not None:
+        raise last
+
+
+def _delete_once(path: Path) -> None:
     if path.is_symlink():
-        path.unlink()
+        path.unlink(missing_ok=True)
         return
     if not path.exists():
         return
     if path.is_dir():
         for child in list(path.iterdir()):
-            delete_tree(child)
+            _delete_once(child)
         path.rmdir()
         return
-    path.unlink()
+    path.unlink(missing_ok=True)
 
 
 def _copy_configs(worker: Path, root: Path, relative: str) -> None:
