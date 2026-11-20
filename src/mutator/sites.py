@@ -366,6 +366,9 @@ def discover_raw(source: str, language: str, path: str) -> list[RawSite]:
         _visit_clojure(tree.root_node, data, found)
     else:
         _visit(tree.root_node, data, language, found)
+    # A mutant that means the same code can never be killed. Its line says so.
+    lines = source.splitlines()
+    found = [site for site in found if "mutator:equivalent" not in lines[site.line - 1]]
     found.sort(key=lambda site: (site.line, site.start, site.end))
     return found
 
