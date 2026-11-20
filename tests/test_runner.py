@@ -153,3 +153,16 @@ def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     result = CommandRunner().run(command, worker, 5)
     assert result.code == 0
     assert result.output.strip() == "worker"
+
+
+def test_test_output_that_is_not_utf8_keeps_the_exit_code(tmp_path):
+    for code in (0, 1):
+        command = f"printf 'caf\\303( ok\\n'; exit {code}"
+        result = CommandRunner().run(command, tmp_path, 5)
+        assert result.code == code
+        assert "ok" in result.output
+
+    command = f"{sys.executable} -c 'import time, sys; sys.stdout.buffer.write(bytes([0xc3])); sys.stdout.flush(); time.sleep(5)'"
+    result = CommandRunner().run(command, tmp_path, 0.5)
+    assert result.timed_out
+    assert result.code == 124
