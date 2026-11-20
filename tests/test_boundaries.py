@@ -410,7 +410,8 @@ def _commit(path: Path, message: str) -> None:
     subprocess.run(["git", "commit", "-m", message], cwd=path, check=True, capture_output=True)
 
 
-def test_git_status_keeps_real_names_and_fails_closed(tmp_path, capsys):
+def test_git_status_keeps_real_names_and_fails_closed(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("LC_ALL", "C")
     outside = tmp_path / "outside"
     outside.mkdir()
     code = run(["--changed", "--root", str(outside)])
