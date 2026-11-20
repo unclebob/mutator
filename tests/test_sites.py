@@ -234,3 +234,12 @@ def test_a_site_remembers_where_its_statement_starts(tmp_path):
     assert (4, "+", 2) in anchors
     assert (4, "1", 2) in anchors
     assert (7, "true", 6) in anchors
+
+
+def test_a_line_marked_equivalent_is_not_a_site(tmp_path):
+    source = (
+        "package demo\n\nfunc Clamp(x, lo, hi int) int {\n"
+        "\tif x < lo { // mutator:equivalent\n\t\treturn lo\n\t}\n"
+        "\tif x > hi {\n\t\treturn hi\n\t}\n\treturn x\n}\n"
+    )
+    assert [site.original for site in _sites(tmp_path, "demo/clamp.go", source)] == [">"]
