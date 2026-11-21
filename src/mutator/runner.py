@@ -70,6 +70,22 @@ def display_command(command: Command) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def _kill_tree(process: subprocess.Popen) -> None:
+    """Kill a timed-out command and every process it started."""
+
+    if os.name == "nt":
+        # Windows has no process groups to signal; taskkill walks the tree.
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        process.kill()
+        return
+    os.killpg(process.pid, signal.SIGKILL)
+
+
 class CommandRunner:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -85,6 +101,9 @@ class CommandRunner:
         if self.verbose:
             print(f"+ ({cwd}) {display_command(command)}", file=sys.stderr)
         started = time.monotonic()
+        if isinstance(command, str) and os.name == "nt":
+            # cmd.exe expands only %NAME%; expand $NAME and ${NAME} as sh would.
+            command = os.path.expandvars(command)
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         _prefer_worker_sources(cwd, environment)
@@ -107,7 +126,7 @@ class CommandRunner:
             code = process.returncode if process.returncode is not None else 1
             timed_out = False
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
+            _kill_tree(process)
             output, _err = process.communicate()
             code = 124
             timed_out = True

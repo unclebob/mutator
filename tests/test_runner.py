@@ -1,4 +1,5 @@
 import sys
+import time
 
 from mutator.runner import CommandRunner, _clojure_command, _python_command, nearest
 from mutator.runner import test_plan as plan_command
@@ -153,3 +154,33 @@ def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     result = CommandRunner().run(command, worker, 5)
     assert result.code == 0
     assert result.output.strip() == "worker"
+
+
+def test_a_typed_command_expands_posix_variables_on_every_platform(tmp_path, monkeypatch):
+    # On Windows a typed command runs through cmd.exe, which knows only %NAME%.
+    (tmp_path / "say.py").write_text("print('ran')\n", encoding="utf-8")
+    monkeypatch.setenv("MUTATOR_TEST_PYTHON", sys.executable)
+    result = CommandRunner().run('"$MUTATOR_TEST_PYTHON" say.py', tmp_path, timeout=60)
+    assert (result.code, result.output.strip()) == (0, "ran")
+
+
+def test_a_timed_out_command_is_killed_with_its_children(tmp_path, monkeypatch):
+    survivor = tmp_path / "survived"
+    (tmp_path / "child.py").write_text(
+        "import pathlib, sys, time\n"
+        "time.sleep(4)\n"
+        "pathlib.Path(sys.argv[1]).write_text('yes')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "parent.py").write_text(
+        "import subprocess, sys\n"
+        "subprocess.run([sys.executable, 'child.py', sys.argv[1]])\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MUTATOR_TEST_PYTHON", sys.executable)
+    result = CommandRunner().run(
+        f'"$MUTATOR_TEST_PYTHON" parent.py "{survivor}"', tmp_path, timeout=1
+    )
+    assert (result.code, result.timed_out) == (124, True)
+    time.sleep(6)
+    assert not survivor.exists(), "a child of the timed-out command kept running"
