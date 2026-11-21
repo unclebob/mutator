@@ -96,6 +96,10 @@ def symlink(link: Path, target: Path) -> None:
 def delete_tree(path: Path) -> None:
     """Remove a worker tree without following a link into the real project."""
 
+    if os.name == "nt" and not str(path).startswith("\\\\?\\"):
+        # A worker's build nests past Windows's 260-character limit, which an
+        # extended-length path does not have. abspath keeps a link unresolved.
+        path = Path("\\\\?\\" + os.path.abspath(path))
     if path.is_symlink():
         path.unlink()
         return
