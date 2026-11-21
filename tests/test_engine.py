@@ -315,3 +315,42 @@ def test_a_worker_deeper_than_the_windows_path_limit_is_deleted(tmp_path):
         file.write("built")
     delete_tree(worker)
     assert not os.path.exists("\\\\?\\" + str(worker))
+
+
+class RecordingRunner:
+    """Passes every run and keeps the bytes of each mutant it was given."""
+
+    def __init__(self):
+        self.verbose = False
+        self.mutants = []
+        self._lock = threading.Lock()
+
+    def run(self, command, cwd, timeout):
+        with self._lock:
+            self.mutants.append((cwd / "src" / "demo.py").read_bytes())
+        return CommandResult(code=0, timed_out=False, seconds=0.01, output="")
+
+
+def test_a_mutant_keeps_the_line_endings_of_its_source(tmp_path):
+    # A Windows checkout ends lines with CRLF; a mutant that gained or lost a
+    # byte anywhere else could fail to build and be scored as killed.
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_bytes(b"def add(a, b):\r\n    return a + b\r\n")
+    runner = RecordingRunner()
+    mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+    )
+    mutants = [mutant for mutant in runner.mutants if mutant != path.read_bytes()]
+    assert mutants
+    assert all(mutant.replace(b"-", b"+") == path.read_bytes() for mutant in mutants), mutants
