@@ -1,6 +1,7 @@
 """Decide which lines the tests already exercise.
 
-Java uses JaCoCo source lines. Go uses statement profiles. Clojure prefers
+Java uses JaCoCo source lines. Go uses statement profiles, which name a
+file by its module import path, the way crapper names it. Clojure prefers
 Cloverage's per-line form counts, then LCOV. The other languages use LCOV.
 A file that does not appear in a report has no coverage data.
 """
@@ -109,13 +110,17 @@ def _best_value(normalized: dict, sources: list[tuple[str, ...]]):
     return best[0][1]
 
 
-def _lookup(index: dict, source_path: str):
+def _lookup(index: dict, source_path: str, name: str | None = None):
+    """The report entry for one source file. `name` is the report's own name for it."""
+
     if not index:
         return None
     crapper = ensure_crapper()
     normalize = crapper.coverage.normalize_path
     normalized = {normalize(key): value for key, value in index.items()}
     candidates = _candidates(normalize, source_path)
+    if name:
+        candidates.append(name)
     found = _exact(normalized, candidates)
     if found is not None:
         return found
@@ -194,10 +199,12 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
     return found
 
 
-def _go_lines(profile, source_path: str) -> set[int] | None:
+def _go_lines(root: Path, profile, source_path: str) -> set[int] | None:
     if not profile:
         return None
-    segments = _lookup(profile, source_path)
+    crapper = ensure_crapper()
+    name = crapper.coverage.go_import_name(Path(source_path), root.resolve())
+    segments = _lookup(profile, source_path, name)
     if segments is None:
         return None
     covered: set[int] = set()
@@ -218,7 +225,7 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
         return _lookup(_jacoco_index(root), path)
     bundle = crapper.coverage.load_bundle(root)
     if language == "go":
-        return _go_lines(bundle.go_profile, path)
+        return _go_lines(root, bundle.go_profile, path)
     if language == "clojure":
         html = _covered_from_pairs(_lookup(bundle.form_html, path))
         if html is not None:
