@@ -102,6 +102,11 @@ def delete_tree(path: Path, attempts: int = 20, sleep=time.sleep) -> None:
     walk instead of aborting the file's mutation run.
     """
 
+    if os.name == "nt" and not str(path).startswith("\\\\?\\"):
+        # A worker's build nests past Windows's 260-character limit, which an
+        # extended-length path does not have. abspath keeps a link unresolved.
+        path = Path("\\\\?\\" + os.path.abspath(path))
+
     last: OSError | None = None
     for attempt in range(attempts):
         try:
@@ -334,7 +339,8 @@ def _execute(
         return "survived"
     destination = directory / relative
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
-    destination.write_text(mutated, encoding="utf-8")
+    # Bytes, not text: text mode on Windows would turn each CRLF into CRCRLF.
+    destination.write_bytes(mutated.encode("utf-8"))
     try:
         result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
     finally:

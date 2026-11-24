@@ -6,6 +6,12 @@ import pytest
 from mutator.workers import delete_tree
 
 
+def _plain(path: Path) -> Path:
+    """The path without the extended-length prefix delete_tree adds on Windows."""
+
+    return Path(str(path).removeprefix("\\\\?\\"))
+
+
 def test_delete_tree_retries_when_a_directory_gains_a_file(tmp_path, monkeypatch):
     tree = tmp_path / "worker"
     tree.mkdir()
@@ -14,7 +20,7 @@ def test_delete_tree_retries_when_a_directory_gains_a_file(tmp_path, monkeypatch
     original_rmdir = Path.rmdir
 
     def rmdir(self):
-        if self == tree and injected["count"] == 0:
+        if _plain(self) == tree and injected["count"] == 0:
             injected["count"] += 1
             (self / "late-report.xml").write_text("flushed", encoding="utf-8")
             raise OSError(errno.ENOTEMPTY, "Directory not empty")
@@ -34,7 +40,7 @@ def test_delete_tree_tolerates_a_file_that_vanishes(tmp_path, monkeypatch):
     original_unlink = Path.unlink
 
     def unlink(self, *args, **kwargs):
-        if self == vanishing and vanishing.exists():
+        if _plain(self) == vanishing and vanishing.exists():
             original_unlink(self)
         return original_unlink(self, *args, **kwargs)
 
