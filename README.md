@@ -12,7 +12,9 @@ A mutant is killed when the tests fail or time out. It survives when the tests s
 ./mutator
 ```
 
-The first run creates `.venv` and installs the tool. crapper has to be checked out next to this directory (`../crapper`), because that is where the namespace and function names come from. From a project root the tool walks the tree, skips `test`, `spec`, `vendor`, `node_modules`, and `target`, and writes `.metrics/mutate/<namespace>.edn`.
+The first run creates `.venv` and installs the tool. crapper has to be checked out next to this directory (`../crapper`), because that is where the namespace and function names come from. From a project root the tool walks the tree and writes `.metrics/mutate/<namespace>.edn`.
+
+Directories such as `vendor`, `node_modules`, `target`, `build`, and `testdata` are skipped at any depth. A test directory (`test`, `tests`, `spec`, `specs`, or `__tests__`) is skipped when it is the first component of the path, and so is `src/test` and `src/tests`. A deeper directory with one of those names, such as `src/pkg/test`, is mutated. Files whose names mark them as tests, such as `test_foo.py`, `foo_test.go`, or `foo.test.ts`, are also skipped.
 
 The first run of a tree executes every covered mutant. Start with the file you are working on.
 

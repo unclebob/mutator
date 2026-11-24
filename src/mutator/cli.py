@@ -13,42 +13,56 @@ from mutator.coverage import covered_lines
 from mutator.engine import mutate_file, restore_backups, scan_file
 from mutator.report import format_results, format_site_log
 from mutator.runner import CommandRunner
+from mutator.sources import is_mutable_source, is_skipped_test, iter_source_files
 
 
-def _skipped_directory_text() -> str:
-    """The directories the walker skips, named the same way in --help."""
+def _comma_and(names: set[str]) -> str:
+    ordered = sorted(names)
+    if len(ordered) == 1:
+        return ordered[0]
+    return ", ".join(ordered[:-1]) + ", and " + ordered[-1]
 
-    names = {
-        ".clj-kondo",
-        ".git",
-        ".hg",
-        ".idea",
-        ".metrics",
-        ".svn",
-        ".venv",
-        "__pycache__",
-        "__tests__",
-        "build",
-        "coverage",
-        "dist",
-        "node_modules",
-        "out",
-        "spec",
-        "specs",
-        "target",
-        "test",
-        "testdata",
-        "tests",
-        "venv",
-        "vendor",
-    }
+
+def _directory_text(attr: str, fallback: set[str]) -> str:
+    names = set(fallback)
     try:
-        crapper = ensure_crapper()
-        names = set(crapper.discover.SKIP_DIRS) | set(crapper.discover.TEST_DIRS)
+        names = set(getattr(ensure_crapper().discover, attr))
     except ImportError:
         pass
-    ordered = sorted(names)
-    return ", ".join(ordered[:-1]) + ", and " + ordered[-1]
+    return _comma_and(names)
+
+
+def _skip_directory_text() -> str:
+    """SKIP_DIRS, named the same way in --help."""
+
+    return _directory_text(
+        "SKIP_DIRS",
+        {
+            ".clj-kondo",
+            ".git",
+            ".hg",
+            ".idea",
+            ".metrics",
+            ".svn",
+            ".venv",
+            "__pycache__",
+            "build",
+            "coverage",
+            "dist",
+            "node_modules",
+            "out",
+            "target",
+            "testdata",
+            "venv",
+            "vendor",
+        },
+    )
+
+
+def _test_directory_text() -> str:
+    """TEST_DIRS, named the same way in --help."""
+
+    return _directory_text("TEST_DIRS", {"test", "tests", "spec", "specs", "__tests__"})
 
 
 HELP = f"""\
@@ -105,7 +119,11 @@ Arguments:
                     path contains this text are mutated.
 
 With no paths, source files under the project root are mutated. Directories
-named {_skipped_directory_text()} are skipped.
+named {_skip_directory_text()} are skipped at any depth. A test directory
+({_test_directory_text()}) is skipped when it is the first component of the
+path, and so is src/test and src/tests. A deeper directory with one of those
+names, such as src/pkg/test, is mutated. Files whose names mark them as tests
+are also skipped.
 
 The default, once a snapshot exists, reruns survivors and sites in functions
 whose text changed. Killed mutants in unchanged functions are kept.
@@ -359,37 +377,19 @@ def _positionals(root: Path, args: list[str]) -> tuple[list[Path], list[str]]:
 
 
 def _changed_sources(root: Path, crapper) -> list[Path]:
-    skip = set(crapper.discover.SKIP_DIRS) | set(crapper.discover.TEST_DIRS)
-    root_resolved = root.resolve()
-    files = []
-    for path in _changed_files(root):
-        relative = path.relative_to(root_resolved)
-        if not skip.isdisjoint(relative.parts):
-            continue
-        if crapper.discover.language_of(path) is None:
-            continue
-        if crapper.discover.is_test_file(path):
-            continue
-        files.append(path)
-    return files
+    return [path for path in _changed_files(root) if is_mutable_source(path, root, crapper)]
 
 
-def _is_source(path: Path, crapper) -> bool:
-    if crapper.discover.language_of(path) is None:
-        return False
-    return not crapper.discover.is_test_file(path)
-
-
-def _explicit_sources(existing: list[Path], crapper) -> list[Path]:
+def _explicit_sources(existing: list[Path], root: Path, crapper) -> list[Path]:
     files = []
     for path in existing:
         if path.is_dir():
-            files.extend(crapper.discover.iter_source_files([path]))
+            files.extend(iter_source_files([path], root, crapper))
             continue
-        if _is_source(path, crapper):
+        if is_mutable_source(path, root, crapper):
             files.append(path)
             continue
-        if crapper.discover.is_test_file(path):
+        if is_skipped_test(path, root, crapper):
             print(f"Skipping test file {path}", file=sys.stderr)
     return files
 
@@ -398,10 +398,11 @@ def _choose_files(options: Options, root: Path, existing: list[Path], crapper) -
     if options.changed:
         return _changed_sources(root, crapper)
     if options.source_roots:
-        return crapper.discover.iter_source_files([(root / path).resolve() for path in options.source_roots])
+        starts = [(root / path).resolve() for path in options.source_roots]
+        return iter_source_files(starts, root, crapper)
     if existing:
-        return _explicit_sources(existing, crapper)
-    return crapper.discover.iter_source_files([root])
+        return _explicit_sources(existing, root, crapper)
+    return iter_source_files([root], root, crapper)
 
 
 def _matching(files: list[Path], filters: list[str]) -> list[Path]:

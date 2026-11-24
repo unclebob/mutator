@@ -44,6 +44,9 @@ def test_help_and_conflicting_flags():
     assert "uml-viewer" in help_options.message
     assert "__pycache__" in help_options.message
     assert "testdata" in help_options.message
+    assert "skipped at any depth" in help_options.message
+    assert "src/test" in help_options.message
+    assert "first component" in help_options.message
     conflict = parse_args(["--mutate-all", "--since-last-run", "src/demo.py"])
     assert conflict.exit_code == 1
     assert run(["--help"]) == 0

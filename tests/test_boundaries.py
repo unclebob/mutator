@@ -16,7 +16,6 @@ import pytest
 from mutator.cli import (
     GitStatusError,
     _changed_files,
-    _is_source,
     _prepare_coverage,
     _take,
     parse_args,
@@ -25,6 +24,7 @@ from mutator.cli import (
 )
 from mutator.coverage import _candidates, _jacoco_index, covered_lines
 from mutator.crapper_link import ensure_crapper
+from mutator.sources import is_mutable_source
 from mutator.edn import loads
 from mutator.engine import (
     _backup,
@@ -495,7 +495,7 @@ def test_selection_joins_the_root_and_skips_unknown_files(tmp_path, capsys):
     note = tmp_path / "note.txt"
     note.write_text("hello\n", encoding="utf-8")
     crapper = ensure_crapper()
-    assert _is_source(note, crapper) is False
+    assert is_mutable_source(note, tmp_path, crapper) is False
     options = parse_args(["--root", str(tmp_path), "src/demo.py"])
     assert select_files(options) == [path.resolve()]
 
