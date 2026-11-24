@@ -90,7 +90,7 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 
 ## What each language mutates
 
-Tokens inside strings, comments, and quoted Clojure forms are left alone. A replacement that does not compile fails the test run and counts as killed.
+Tokens inside strings, comments, and quoted Clojure forms are left alone. A line that contains `mutator:equivalent`, usually in a comment, is left alone too: mark a mutant there that means the same code and can never be killed. A replacement that does not compile fails the test run and counts as killed.
 
 | Language | Mutations |
 | --- | --- |
