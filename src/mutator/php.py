@@ -6,15 +6,25 @@ not), the fully-qualified name anywhere, or a grouped `use Prefix\\{...}`
 that expands to it. A file no test names has no command, and its sites are
 reported as uncovered instead of running the whole suite.
 
+A worker links the project, and PHP resolves links: `__DIR__` in the linked
+`vendor/` is the real project, so Composer would load the original class.
+Each worker therefore gets `.mutator-php/prepend.php`, which requires the
+real `vendor/autoload.php` and adds a class-map entry pointing each class at
+the worker's mutated copy. Composer caches its loader and checks the class
+map first, and a later entry replaces an optimized one. The mutant command
+runs PHP with `-d auto_prepend_file=` that file.
+
 The tests run in one PHP process (Pest, else PHPUnit), never through
 `artisan test`, which starts a second PHP process that would not inherit the
-worker's `-d auto_prepend_file`.
+`-d` flag. A string `--test-command` cannot be rewritten; it gets the file's
+path in `MUTATOR_PHP_PREPEND` instead.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 
@@ -28,6 +38,8 @@ _CLASS_LIKE = {
 }
 _GROUPED_USE = re.compile(r"\buse\s+(?:function\s+|const\s+)?\\?([\w\\]+?)\\\s*\{([^}]*)\}")
 _TEST_SUFFIX = "Test.php"
+_PREPEND = Path(".mutator-php") / "prepend.php"
+_PREPEND_VARIABLE = "MUTATOR_PHP_PREPEND"
 
 
 def _namespace(data: bytes, node, crapper) -> str:
@@ -109,3 +121,58 @@ def warn_untested(classes: list[str]) -> None:
 def test_command(project: Path, files: list[str]) -> list[str]:
     runner = "vendor/bin/pest" if (project / "vendor" / "bin" / "pest").is_file() else "vendor/bin/phpunit"
     return ["env", "XDEBUG_MODE=off", "php", runner, *files]
+
+
+def _literal(text: str) -> str:
+    """A PHP single-quoted string."""
+
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+
+def prepend_text(autoload: Path, classes: list[str], mutated: Path) -> str:
+    entries = ", ".join(f"{_literal(fqcn)} => {_literal(str(mutated))}" for fqcn in classes)
+    return (
+        "<?php\n"
+        f"$mutatorLoader = require {_literal(str(autoload))};\n"
+        f"$mutatorLoader->addClassMap([{entries}]);\n"
+        "unset($mutatorLoader);\n"
+    )
+
+
+def write_prepend(worker: Path, autoload: Path, mutated: Path, original: bytes) -> None:
+    """Point the classes of the mutated file at the worker's copy. Nothing without Composer."""
+
+    classes = declared_classes(original.decode("utf-8"))
+    if not autoload.is_file() or not classes:
+        return
+    target = worker / _PREPEND
+    target.parent.mkdir(parents=True, exist_ok=True)
+    text = prepend_text(autoload.resolve(), classes, mutated.resolve())
+    target.write_text(text, encoding="utf-8")
+
+
+def _with_prepend(command: list[str], prepend: Path) -> list[str]:
+    if "php" not in command:
+        return command
+    at = command.index("php") + 1
+    return [*command[:at], "-d", f"auto_prepend_file={prepend}", *command[at:]]
+
+
+def worker_command(command, worker: Path):
+    """The mutant's command: PHP loads the worker's copy through the prepend file."""
+
+    prepend = (worker / _PREPEND).resolve()
+    if not prepend.is_file():
+        return command
+    if isinstance(command, str):
+        return f"export {_PREPEND_VARIABLE}={shlex.quote(str(prepend))}; {command}"
+    return _with_prepend(command, prepend)
+
+
+def warn_override(command) -> None:
+    if isinstance(command, str) and _PREPEND_VARIABLE not in command:
+        print(
+            f"A PHP --test-command must pass -d auto_prepend_file=\"${_PREPEND_VARIABLE}\", "
+            "or each mutant runs the original class and survives.",
+            file=sys.stderr,
+        )

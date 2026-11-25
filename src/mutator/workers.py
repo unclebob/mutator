@@ -18,8 +18,9 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
 
+from mutator import php
 from mutator.model import Site
-from mutator.runner import Command
+from mutator.runner import Command, nearest
 from mutator.sites import apply_site
 
 # Build output and the worker tree itself must not be shared. A link to
@@ -287,6 +288,13 @@ def _overlay(worker: Path, root: Path, relative: str, original: bytes) -> None:
     destination.write_bytes(original)
 
 
+def _php_prepend(worker: Path, root: Path, relative: str, original: bytes) -> None:
+    if not relative.endswith(".php"):
+        return
+    project = nearest(root / relative, "composer.json", root) or root
+    php.write_prepend(worker, project / "vendor" / "autoload.php", worker / relative, original)
+
+
 def create_workers(
     base: Path, root: Path, relative: str, original: bytes, count: int
 ) -> list[Path]:
@@ -301,6 +309,7 @@ def create_workers(
         _overlay(worker, root, relative, original)
         for importer in importers:
             _copy_importer(worker, root, importer)
+        _php_prepend(worker, root, relative, original)
         created.append(worker)
     return created
 
@@ -336,7 +345,8 @@ def _execute(
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
     destination.write_text(mutated, encoding="utf-8")
     try:
-        result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+        mutant_command = php.worker_command(command, directory)
+        result = runner.run(mutant_command, mapped_cwd(directory, root, cwd), timeout)
     finally:
         destination.write_bytes(original)
     if result.timed_out or result.code != 0:
@@ -446,6 +456,8 @@ def run_mutants(
     base = new_run_dir(root)
     try:
         relative = source.resolve().relative_to(root.resolve()).as_posix()
+        if relative.endswith(".php"):
+            php.warn_override(command)
         directories = create_workers(
             base, root, relative, original, worker_count(len(sites), max_workers)
         )
