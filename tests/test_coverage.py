@@ -136,3 +136,35 @@ def test_go_profile_of_a_module_in_a_subdirectory(tmp_path):
     )
     source = _go_source(tmp_path / "svc" / "calc" / "calc.go")
     assert covered_lines(tmp_path, source, "go") == {4, 5, 6}
+
+
+def _clover(report, name):
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        f"""<?xml version="1.0" encoding="UTF-8"?>
+<coverage><project><file name="{name}">
+<class name="App\\Models\\Coupon" namespace="App\\Models"/>
+<line num="5" type="method" name="place" count="2"/>
+<line num="7" type="stmt" count="2"/>
+<line num="8" type="stmt" count="0"/>
+<line num="9" type="cond" count="1"/>
+</file></project></coverage>
+""",
+        encoding="utf-8",
+    )
+
+
+def test_clover_marks_hit_statements_by_absolute_path(tmp_path):
+    source = tmp_path / "app" / "Models" / "Coupon.php"
+    source.parent.mkdir(parents=True)
+    source.write_text("<?php\n", encoding="utf-8")
+    _clover(tmp_path / "target" / "coverage" / "php" / "clover.xml", source.resolve().as_posix())
+    assert covered_lines(tmp_path, source, "php") == {7, 9}
+
+
+def test_clover_does_not_lend_one_file_to_another(tmp_path):
+    source = tmp_path / "app" / "Models" / "Coupon.php"
+    source.parent.mkdir(parents=True)
+    source.write_text("<?php\n", encoding="utf-8")
+    _clover(tmp_path / "target" / "coverage" / "php" / "clover.xml", source.resolve().as_posix())
+    assert covered_lines(tmp_path, tmp_path / "app" / "Models" / "CouponUsage.php", "php") is None
