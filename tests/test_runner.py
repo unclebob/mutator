@@ -1,6 +1,12 @@
+import os
 import sys
+import time
 
-from mutator.runner import CommandRunner, _clojure_command, _python_command, nearest
+import pytest
+
+import mutator.runner as runner_module
+from mutator.runner import CommandRunner, _higher, _linux_footprint, _over, _seconds_left, _stop, group_footprint
+from mutator.runner import _clojure_command, _python_command, nearest
 from mutator.runner import test_plan as plan_command
 
 
@@ -153,3 +159,85 @@ def test_a_worker_overlay_is_imported_ahead_of_the_environment(tmp_path):
     result = CommandRunner().run(command, worker, 5)
     assert result.code == 0
     assert result.output.strip() == "worker"
+
+
+# Touch every page, or the zero-filled allocation never counts toward the footprint.
+ALLOCATE = "import time; x = bytearray({mb} << 20); x[::4096] = b'1' * len(x[::4096]); time.sleep({sleep})"
+needs_footprint = pytest.mark.skipif(
+    group_footprint(os.getpgrp()) is None, reason="process group memory is not readable here"
+)
+
+
+@needs_footprint
+def test_a_run_records_the_peak_memory_of_its_whole_process_group(tmp_path):
+    grandchild = ALLOCATE.format(mb=200, sleep=1)
+    code = f"import subprocess, sys; subprocess.run([sys.executable, '-c', {grandchild!r}])"
+    result = CommandRunner().run([sys.executable, "-c", code], tmp_path, 30)
+    assert result.code == 0
+    assert result.peak_bytes >= 150 << 20
+    assert result.out_of_memory is False
+
+
+@needs_footprint
+def test_a_run_over_its_memory_limit_is_killed_early(tmp_path):
+    started = time.monotonic()
+    command = [sys.executable, "-c", ALLOCATE.format(mb=400, sleep=30)]
+    result = CommandRunner().run(command, tmp_path, 60, memory_limit=100 << 20)
+    assert result.out_of_memory is True
+    assert result.timed_out is False
+    assert result.code == 137
+    assert result.peak_bytes > 100 << 20
+    assert time.monotonic() - started < 10
+
+
+def test_a_run_under_its_memory_limit_finishes_normally(tmp_path):
+    result = CommandRunner().run([sys.executable, "-c", "print('ok')"], tmp_path, 30, memory_limit=1 << 30)
+    assert result.code == 0
+    assert result.out_of_memory is False
+    assert result.output.strip() == "ok"
+
+
+def test_linux_footprint_sums_only_the_group_from_proc(tmp_path):
+    def entry(name, stat, statm):
+        directory = tmp_path / name
+        directory.mkdir()
+        if stat is not None:
+            (directory / "stat").write_text(stat)
+        (directory / "statm").write_text(statm)
+
+    entry("10", "10 (go) S 1 7 7 0", "900 3 0")
+    entry("11", "11 (other) S 1 8 8 0", "900 50 0")
+    entry("12", "12 (a ) b) S 10 7 7 0", "900 2 0")  # a name holding ") "
+    entry("13", None, "900 40 0")  # exited between the listing and the read
+    entry("self", "1 (x) S 1 7 7 0", "900 99 0")
+    assert _linux_footprint(7, tmp_path) == 5 * os.sysconf("SC_PAGE_SIZE")
+
+
+def test_stopping_a_group_that_already_exited_keeps_its_output(monkeypatch):
+    class Exited:
+        pid = 4321
+
+        def communicate(self):
+            return "done", None
+
+    def killpg(_group, _signal):
+        raise PermissionError(1, "Operation not permitted")  # macOS, for a group of zombies
+
+    monkeypatch.setattr(runner_module.os, "killpg", killpg)
+    assert _stop(Exited(), 124, "timeout", 7) == ("done", 124, "timeout", 7)
+
+
+def test_a_missing_memory_reading_keeps_the_peak_and_is_never_over_the_limit():
+    assert _higher(None, None) is None
+    assert _higher(None, 5) == 5
+    assert _higher(7, None) == 7
+    assert _higher(7, 5) == 7
+    assert not _over(None, 10)
+    assert not _over(11, None)
+    assert not _over(10, 10)
+    assert _over(11, 10)
+
+
+def test_no_timeout_means_no_deadline():
+    assert _seconds_left(time.monotonic(), None) == float("inf")
+    assert _seconds_left(time.monotonic() - 5, 2) < 0

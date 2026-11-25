@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
+import math
 import os
 import shlex
 import signal
@@ -15,6 +18,9 @@ from mutator.crapper_link import ensure_crapper
 
 Command = str | list[str]
 
+# How often a running command's memory and deadline are checked.
+POLL_SECONDS = 0.1
+
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -22,6 +28,155 @@ class CommandResult:
     timed_out: bool
     seconds: float
     output: str
+    # The most memory the command's process group held, in bytes; None where it cannot be read.
+    peak_bytes: int | None = None
+    # True when the group passed `memory_limit` and was killed.
+    out_of_memory: bool = False
+
+
+class _RusageInfoV2(ctypes.Structure):
+    """struct rusage_info_v2 from <sys/resource.h>."""
+
+    _fields_ = [("ri_uuid", ctypes.c_uint8 * 16)] + [
+        (name, ctypes.c_uint64)
+        for name in (
+            "ri_user_time",
+            "ri_system_time",
+            "ri_pkg_idle_wkups",
+            "ri_interrupt_wkups",
+            "ri_pageins",
+            "ri_wired_size",
+            "ri_resident_size",
+            "ri_phys_footprint",
+            "ri_proc_start_abstime",
+            "ri_proc_exit_abstime",
+            "ri_child_user_time",
+            "ri_child_system_time",
+            "ri_child_pkg_idle_wkups",
+            "ri_child_interrupt_wkups",
+            "ri_child_pageins",
+            "ri_child_elapsed_abstime",
+            "ri_diskio_bytesread",
+            "ri_diskio_byteswritten",
+        )
+    ]
+
+
+_LIBPROC: list = []
+
+
+def _libproc():
+    """libproc, loaded once; None when it cannot be loaded."""
+
+    if not _LIBPROC:
+        try:
+            _LIBPROC.append(ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib"))
+        except OSError:
+            _LIBPROC.append(None)
+    return _LIBPROC[0]
+
+
+def _darwin_footprint(pgid: int) -> int | None:
+    """Physical footprint of the group, as Activity Monitor counts it: compressed and swapped pages too."""
+
+    lib = _libproc()
+    if lib is None:
+        return None
+    pids = (ctypes.c_int * 4096)()
+    count = lib.proc_listpgrppids(pgid, pids, ctypes.sizeof(pids))
+    total = 0
+    for pid in pids[: max(count, 0)]:
+        info = _RusageInfoV2()
+        if lib.proc_pid_rusage(pid, 2, ctypes.byref(info)) == 0:  # 2 = RUSAGE_INFO_V2
+            total += info.ri_phys_footprint
+    return total
+
+
+def _linux_resident(pid_dir: Path, pgid: int, page: int) -> int:
+    """Resident bytes of one /proc/<pid> entry when it belongs to `pgid`, else 0."""
+
+    try:
+        stat = (pid_dir / "stat").read_text()
+        # The command name is in parentheses and may hold spaces: split after the last ')'.
+        if int(stat.rsplit(")", 1)[1].split()[2]) != pgid:
+            return 0
+        return int((pid_dir / "statm").read_text().split()[1]) * page
+    except (OSError, IndexError, ValueError):  # the process exited while it was read
+        return 0
+
+
+def _linux_footprint(pgid: int, proc: Path = Path("/proc")) -> int:
+    page = os.sysconf("SC_PAGE_SIZE")
+    return sum(_linux_resident(entry, pgid, page) for entry in proc.iterdir() if entry.name.isdigit())
+
+
+def group_footprint(pgid: int) -> int | None:
+    """Bytes of memory the process group holds; None on a platform that cannot tell."""
+
+    if sys.platform == "darwin":
+        return _darwin_footprint(pgid)
+    if sys.platform.startswith("linux"):
+        return _linux_footprint(pgid)
+    return None
+
+
+def _stop(process, code: int, reason: str, peak: int | None):
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):  # exited since the check; macOS says EPERM for zombies
+        pass
+    output, _err = process.communicate()
+    return output, code, reason, peak
+
+
+def _higher(peak: int | None, size: int | None) -> int | None:
+    """The larger reading. A reading that could not be taken (None) is skipped."""
+
+    if size is None:
+        return peak
+    if peak is None:
+        return size
+    return max(peak, size)
+
+
+def _over(size: int | None, limit: int | None) -> bool:
+    """True only when both are known and the size is past the limit."""
+
+    if size is None or limit is None:
+        return False
+    return size > limit
+
+
+def _seconds_left(started: float, timeout: float | None) -> float:
+    """Seconds until the deadline. Without a timeout there is no deadline."""
+
+    if timeout is None:
+        return math.inf
+    return timeout - (time.monotonic() - started)
+
+
+def _wait(process, started: float, timeout: float | None, memory_limit: int | None):
+    """Wait for `process`, killing its group on the deadline or past the memory limit.
+
+    Returns (output, code, reason, peak): reason is None, "timeout" or "memory".
+    communicate() is retried after each poll; a retry loses no output.
+    """
+
+    peak = None
+    while True:
+        size = group_footprint(process.pid)
+        peak = _higher(peak, size)
+        if _over(size, memory_limit):
+            return _stop(process, 137, "memory", peak)
+        left = _seconds_left(started, timeout)
+        if left <= 0:
+            return _stop(process, 124, "timeout", peak)
+        try:
+            output, _err = process.communicate(timeout=min(POLL_SECONDS, left))
+        except subprocess.TimeoutExpired:
+            continue
+        code = process.returncode if process.returncode is not None else 1
+        return output, code, None, peak
 
 
 def _worker_home(cwd: Path) -> Path | None:
@@ -76,12 +231,16 @@ class CommandRunner:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
 
-    def run(self, command: Command, cwd: Path, timeout: float | None) -> CommandResult:
+    def run(
+        self, command: Command, cwd: Path, timeout: float | None, memory_limit: int | None = None
+    ) -> CommandResult:
         """Run `command` in `cwd`.
 
         A list is an argument vector and does not go through a shell, so a
         path with spaces or metacharacters stays one argument. A string is a
         command the user typed in `--test-command` or `--coverage-command`.
+        The command's process group is killed after `timeout` seconds, or once
+        it holds more than `memory_limit` bytes.
         """
 
         if self.verbose:
@@ -104,17 +263,16 @@ class CommandRunner:
         except OSError as exc:
             seconds = time.monotonic() - started
             return CommandResult(code=127, timed_out=False, seconds=seconds, output=str(exc))
-        try:
-            output, _err = process.communicate(timeout=timeout)
-            code = process.returncode if process.returncode is not None else 1
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            output, _err = process.communicate()
-            code = 124
-            timed_out = True
+        output, code, reason, peak = _wait(process, started, timeout, memory_limit)
         seconds = time.monotonic() - started
-        return CommandResult(code=code, timed_out=timed_out, seconds=seconds, output=output or "")
+        return CommandResult(
+            code=code,
+            timed_out=reason == "timeout",
+            seconds=seconds,
+            output=output or "",
+            peak_bytes=peak,
+            out_of_memory=reason == "memory",
+        )
 
 
 def nearest(start: Path, marker: str, stop: Path) -> Path | None:

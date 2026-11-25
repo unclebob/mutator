@@ -353,6 +353,7 @@ def _execute(
     cwd: Path,
     timeout: float,
     file_key: str,
+    memory_limit: int | None = None,
 ) -> str:
     current = original[site.start : site.end].decode("utf-8")
     if current != site.original:
@@ -365,12 +366,29 @@ def _execute(
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
     destination.write_text(mutated, encoding="utf-8")
     try:
-        result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
+        result = _run(runner, command, mapped_cwd(directory, root, cwd), timeout, memory_limit)
     finally:
         destination.write_bytes(original)
+    if result.out_of_memory:
+        print(
+            f"Killed {file_key}:{site.line} {site.description}: memory "
+            f"{_gib(result.peak_bytes)} over the {_gib(memory_limit)} limit",
+            file=sys.stderr,
+        )
     if result.timed_out or result.code != 0:
         return "killed"
     return "survived"
+
+
+def _run(runner, command: Command, cwd: Path, timeout: float, memory_limit: int | None):
+    # Without a limit, call run() the old way, so a runner that predates memory_limit still works.
+    if memory_limit is None:
+        return runner.run(command, cwd, timeout)
+    return runner.run(command, cwd, timeout, memory_limit=memory_limit)
+
+
+def _gib(size: int | None) -> str:
+    return "?" if size is None else f"{size / (1 << 30):.1f} GiB"
 
 
 def _drain(
@@ -386,6 +404,7 @@ def _drain(
     cwd: Path,
     timeout: float,
     file_key: str,
+    memory_limit: int | None,
 ) -> None:
     while True:
         try:
@@ -406,6 +425,7 @@ def _drain(
             cwd,
             timeout,
             file_key,
+            memory_limit,
         )
         with lock:
             outcomes[site.mutation_id] = status
@@ -427,6 +447,7 @@ def _run_all(
     cwd: Path,
     timeout: float,
     file_key: str,
+    memory_limit: int | None,
 ) -> None:
     pending: Queue = Queue()
     for site in sites:
@@ -448,6 +469,7 @@ def _run_all(
                 cwd,
                 timeout,
                 file_key,
+                memory_limit,
             )
             for directory in directories
         ]
@@ -467,8 +489,12 @@ def run_mutants(
     timeout: float,
     file_key: str,
     outcomes: dict[str, str],
+    memory_limit: int | None = None,
 ) -> None:
-    """Mutate ``sites`` in parallel overlays of ``root``. The source stays put."""
+    """Mutate ``sites`` in parallel overlays of ``root``. The source stays put.
+
+    A mutant whose tests hold more than ``memory_limit`` bytes is stopped and counts as killed.
+    """
 
     if not sites:
         return
@@ -490,6 +516,7 @@ def run_mutants(
             cwd,
             timeout,
             file_key,
+            memory_limit,
         )
     finally:
         delete_tree(base)

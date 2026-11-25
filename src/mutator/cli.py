@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import sys
@@ -110,6 +111,10 @@ Options:
   --timeout-factor <number>     Mutant timeout, as a multiple of the baseline
                                 duration. Default: 10. The timeout is at least
                                 2 seconds.
+  --memory-factor <number>      Kill a mutant whose test processes hold more
+                                memory than this multiple of the baseline's
+                                peak. Default: 10. The limit is at least 1 GiB.
+                                0 turns it off. Read on macOS and Linux only.
   --mutation-warning <number>   Warn when a file selects more covered sites
                                 than this. Default: 50.
   --max-workers <number>        Run at most this many mutants of one file at
@@ -182,6 +187,7 @@ class Options:
     xcode_scheme: str | None = None
     xcode_destination: str | None = None
     timeout_factor: float = 10.0
+    memory_factor: float = 10.0
     mutation_warning: int = 50
     max_workers: int | None = None
     changed: bool = False
@@ -202,6 +208,17 @@ def _workers(value: str) -> int:
     if count < 1:
         raise ValueError("--max-workers requires a positive integer")
     return count
+
+
+def _memory_factor(value: str) -> float:
+    message = "--memory-factor requires a finite number, 0 or more"
+    try:
+        factor = float(value)
+    except ValueError:
+        raise ValueError(message) from None
+    if not math.isfinite(factor) or factor < 0:
+        raise ValueError(message)
+    return factor
 
 
 def _lines(value: str) -> set[int]:
@@ -256,6 +273,10 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 options.timeout_factor = float(_take(args, index, arg))
                 if options.timeout_factor <= 0:
                     raise ValueError("--timeout-factor requires a positive number")
+                index += 2
+                continue
+            if arg == "--memory-factor":
+                options.memory_factor = _memory_factor(_take(args, index, arg))
                 index += 2
                 continue
             if arg == "--mutation-warning":
@@ -550,7 +571,7 @@ def _finish(baseline_failed: bool, survived: bool) -> int:
 
 def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
     runner = CommandRunner(verbose=options.verbose)
-    baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]] = {}
+    baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str, int | None]] = {}
     forms = []
     written: list[str] = []
     baseline_failed = False
@@ -566,6 +587,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             lines=options.lines,
             test_command=options.test_command,
             timeout_factor=options.timeout_factor,
+            memory_factor=options.memory_factor,
             mutation_warning=options.mutation_warning,
             baselines=baselines,
             max_workers=options.max_workers,

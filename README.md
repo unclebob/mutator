@@ -107,7 +107,7 @@ Swift does not mutate `?.`. The `?` on an optional type is not an operator. `if 
 
 ## Tests and coverage
 
-The baseline command has to pass before any mutant runs. A mutant's timeout is ten times that baseline, and at least two seconds. `--timeout-factor` changes the multiple. `--test-command` replaces the default. Defaults:
+The baseline command has to pass before any mutant runs. A mutant's timeout is ten times that baseline, and at least two seconds. `--timeout-factor` changes the multiple. A mutant whose test processes hold more memory than ten times the baseline's peak, and at least 1 GiB, is killed and counted as killed. `--memory-factor` changes the multiple; 0 turns it off. Memory is read on macOS and Linux. `--test-command` replaces the default. Defaults:
 
 | Language | Command | Where |
 | --- | --- | --- |
