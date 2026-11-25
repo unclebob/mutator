@@ -1,10 +1,11 @@
 """Find mutation sites.
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
-one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, and Python
-use the same decisions as Java, spelled in that language. TypeScript also
-mutates `??` to `||` and `?.` to `.` (removed on a call or index). JavaScript
-files use the TypeScript rules.
+one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, Python, and
+Swift use the same decisions as Java, spelled in that language. TypeScript
+also mutates `??` to `||` and `?.` to `.` (removed on a call or index).
+Swift mutates `??` to `||` and wraps a boolean condition of `if`, `guard`,
+`while`, or `repeat-while` in `!()`. JavaScript files use the TypeScript rules.
 """
 
 from __future__ import annotations
@@ -36,9 +37,39 @@ _BINARY_PARENTS = {
     "binary_operator",
     "comparison_operator",
     "boolean_operator",
+    "additive_expression",
+    "multiplicative_expression",
+    "comparison_expression",
+    "equality_expression",
+    "infix_expression",
+    "conjunction_expression",
+    "disjunction_expression",
+    "nil_coalescing_expression",
 }
 
-_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator"}
+_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator", "prefix_expression"}
+
+# Boolean conditions. A `let` binding is not one of them. `repeat-while` puts
+# the condition after the body; the others put it before.
+_SWIFT_CONDITIONS = {
+    "if_statement",
+    "guard_statement",
+    "while_statement",
+    "repeat_while_statement",
+}
+_SWIFT_SKIP = {
+    "if",
+    "else",
+    "guard",
+    "while",
+    "repeat",
+    "{",
+    "}",
+    ",",
+    "statements",
+    "if_statement",
+    "comment",
+}
 
 _BOOLEANS = {"true": "false", "false": "true", "True": "False", "False": "True"}
 
@@ -137,7 +168,7 @@ def _category(token: str) -> str:
 def _binary_mutant(language: str, token: str) -> str | None:
     if language == "go" and token == "/":
         return None
-    if token == "??" and language != "typescript":
+    if token == "??" and language not in {"typescript", "swift"}:
         return None
     return _BINARY.get(token)
 
@@ -336,9 +367,51 @@ def _visit_leaf(node, data: bytes, language: str, found: list[RawSite]) -> None:
     _visit_constant(node, token, found)
 
 
+def _ends_swift_conditions(node, child) -> bool:
+    if child.type == "else":
+        return True
+    if node.type == "repeat_while_statement":
+        return False
+    return child.type in {"{", "statements"}
+
+
+def _swift_conditions(node):
+    if node.type not in _SWIFT_CONDITIONS:
+        return []
+    found = []
+    binding = False
+    for child in node.children:
+        if _ends_swift_conditions(node, child):
+            break
+        if child.type in _SWIFT_SKIP:
+            binding = False
+            continue
+        if child.type == "value_binding_pattern":
+            binding = True
+            continue
+        if binding:
+            continue
+        found.append(child)
+    return found
+
+
+def _negate_condition(node, data: bytes, found: list[RawSite]) -> None:
+    original = _text(data, node)
+    if not original.strip():
+        return
+    _add(found, node, original, f"!({original})", "conditional")
+
+
+def _visit_swift_conditions(node, data: bytes, found: list[RawSite]) -> None:
+    for condition in _swift_conditions(node):
+        _negate_condition(condition, data, found)
+
+
 def _visit_node(node, data: bytes, language: str, found: list[RawSite]) -> None:
     if language == "typescript" and _in_type(node):
         return
+    if language == "swift":
+        _visit_swift_conditions(node, data, found)
     if node.child_count == 0:
         _visit_leaf(node, data, language, found)
     else:
