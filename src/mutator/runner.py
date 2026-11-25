@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from mutator import php
+
 Command = str | list[str]
 
 
@@ -222,6 +224,18 @@ def _python_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return _python_command(directory), directory
 
 
+def _php_plan(root: Path, source: Path) -> tuple[Command | None, Path]:
+    """The tests that name the file's classes, or None when no test does."""
+
+    directory = _nearest_marker(source, root, ("composer.json",))
+    classes = php.declared_classes(_read(source))
+    files = php.naming_tests(directory, classes)
+    if not files:
+        php.warn_untested(classes)
+        return None, directory
+    return php.test_command(directory, files), directory
+
+
 _PLANS = {
     "clojure": _clojure_plan,
     "java": _java_plan,
@@ -229,14 +243,18 @@ _PLANS = {
     "typescript": _typescript_plan,
     "rust": _rust_plan,
     "python": _python_plan,
+    "php": _php_plan,
 }
 
 
-def test_plan(root: Path, source: Path, language: str, override: str | None) -> tuple[Command, Path]:
+def test_plan(
+    root: Path, source: Path, language: str, override: str | None
+) -> tuple[Command | None, Path]:
     """The test command and the directory it runs in.
 
     A user override stays a shell string. Every generated command is an
-    argument vector, so a package path is one argument.
+    argument vector, so a package path is one argument. The command is None
+    when no test can reach the file (a PHP class no test names).
     """
 
     root = root.resolve()

@@ -172,6 +172,17 @@ def _warn_uncovered(file_key: str, found, covered_lines, ignore_coverage: bool) 
     )
 
 
+def _file_coverage(
+    file_key: str, found: list[Site], command, covered_lines, ignore_coverage: bool
+) -> dict[str, bool]:
+    """No test command means no test reaches the file, so nothing is covered."""
+
+    if command is None:
+        return {site.mutation_id: False for site in found}
+    _warn_uncovered(file_key, found, covered_lines, ignore_coverage)
+    return _coverage_map(found, covered_lines, ignore_coverage)
+
+
 def _warn_many(file_key: str, selected, mutation_warning: int) -> None:
     if len(selected) > mutation_warning:
         print(
@@ -212,8 +223,7 @@ def _apply_selected(
     original,
     selected,
     runner,
-    language,
-    test_command,
+    plan,
     timeout_factor,
     file_key,
     baselines,
@@ -222,7 +232,7 @@ def _apply_selected(
 ) -> RunResult | None:
     if not selected:
         return None
-    command, cwd = test_plan(root, path, language, test_command)
+    command, cwd = plan
     cache_key = (_command_key(command), str(cwd))
     _remember_baseline(baselines, cache_key, runner, command, cwd)
     ok, seconds, tail = baselines[cache_key]
@@ -289,8 +299,8 @@ def mutate_file(
         return RunResult(path=file_key, forms=[], written=[], skipped="file is not UTF-8")
     original, source = decoded
     found = sites_in_file(source, path, root, file_key)
-    covered = _coverage_map(found, covered_lines, ignore_coverage)
-    _warn_uncovered(file_key, found, covered_lines, ignore_coverage)
+    plan = test_plan(root, path, language, test_command)
+    covered = _file_coverage(file_key, found, plan[0], covered_lines, ignore_coverage)
     history = load_history(root, file_key)
     digests = form_digests(source, path, root)
     selected = _select(found, covered, history, digests, mutate_all, lines)
@@ -302,8 +312,7 @@ def mutate_file(
         original,
         selected,
         runner,
-        language,
-        test_command,
+        plan,
         timeout_factor,
         file_key,
         baselines,
