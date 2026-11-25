@@ -36,33 +36,57 @@ def _header(source: str, start: int, end: int) -> str:
     return text
 
 
-def _python_private(name: str) -> bool:
+def _clojure_private(name: str, header: str) -> bool:
+    return bool(re.match(r"\(defn-", header))
+
+
+def _java_private(name: str, header: str) -> bool:
+    return bool(re.search(r"\bprivate\b", header))
+
+
+def _go_private(name: str, header: str) -> bool:
+    return name[:1].islower()
+
+
+def _python_private(name: str, header: str) -> bool:
     if name.startswith("__") and name.endswith("__"):
         return False
     return name.startswith("_")
+
+
+def _rust_private(name: str, header: str) -> bool:
+    return re.match(r"pub\s", header) is None
 
 
 def _typescript_private(name: str, header: str) -> bool:
     return name.startswith("#") or bool(re.search(r"\bprivate\b", header))
 
 
+def _php_private(name: str, header: str) -> bool:
+    """Only the modifiers count. A body that names `$private` is not one."""
+
+    modifiers = header.split("function", 1)[0]
+    return bool(re.search(r"\bprivate\b", modifiers))
+
+
+_PRIVATE = {
+    "clojure": _clojure_private,
+    "java": _java_private,
+    "go": _go_private,
+    "python": _python_private,
+    "rust": _rust_private,
+    "typescript": _typescript_private,
+    "php": _php_private,
+}
+
+
 def is_private(language: str, name: str, source: str, start: int, end: int) -> bool:
     """True when uml-viewer should treat the operation as private."""
 
-    header = _header(source, start, end)
-    if language == "clojure":
-        return bool(re.match(r"\(defn-", header))
-    if language == "java":
-        return bool(re.search(r"\bprivate\b", header))
-    if language == "go":
-        return name[:1].islower()
-    if language == "python":
-        return _python_private(name)
-    if language == "rust":
-        return re.match(r"pub\s", header) is None
-    if language == "typescript":
-        return _typescript_private(name, header)
-    return False
+    rule = _PRIVATE.get(language)
+    if rule is None:
+        return False
+    return rule(name, _header(source, start, end))
 
 
 def form_id(name: str, private: bool) -> str:

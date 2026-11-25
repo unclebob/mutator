@@ -68,9 +68,9 @@ def _test_directory_text() -> str:
 HELP = f"""\
 Usage: mutator [options] [path-or-filter ...]
 
-Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, and Python,
-run the project's tests against each one, and write `.metrics/mutate` for
-uml-viewer. Namespaces and function names are the ones crapper writes into
+Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, Python, and
+PHP, run the project's tests against each one, and write `.metrics/mutate`
+for uml-viewer. Namespaces and function names are the ones crapper writes into
 `.metrics/crap.edn`.
 
 A form id is `defn/<name>` or, for a private operation, `defn-/<name>`.
@@ -147,6 +147,11 @@ Coverage, when it is produced, uses the same commands as crapper:
   TypeScript   npm run coverage, Vitest, or c8
   Rust         cargo llvm-cov or cargo tarpaulin
   Python       coverage.py LCOV
+  PHP          artisan test, Pest, or PHPUnit with Clover XML
+
+A PHP file runs only the tests under tests/ that name its classes, serially,
+with a prepend file that loads the worker's copy. A PHP --test-command must
+pass -d auto_prepend_file="$MUTATOR_PHP_PREPEND".
 
 A site on a line the report does not mark as hit is uncovered and is not run.
 """

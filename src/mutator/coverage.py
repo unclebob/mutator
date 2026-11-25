@@ -2,7 +2,10 @@
 
 Java uses JaCoCo source lines. Go uses statement profiles, which name a
 file by its module import path, the way crapper names it. Clojure prefers
-Cloverage's per-line form counts, then LCOV. The other languages use LCOV.
+Cloverage's per-line form counts, then LCOV. PHP reads PHPUnit's Clover XML,
+which crapper's bundle merges into the LCOV index under each file's absolute
+path, so the resolved source path matches it exactly. The other languages use
+LCOV.
 A file that does not appear in a report has no coverage data.
 """
 

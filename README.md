@@ -1,8 +1,8 @@
 # mutator
 
-Mutation testing for Clojure, Java, Go, TypeScript, Rust, and Python. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
+Mutation testing for Clojure, Java, Go, TypeScript, Rust, Python, and PHP. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
 
-Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, and Python use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
+Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, Python, and PHP use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
 
 A mutant is killed when the tests fail or time out. It survives when the tests still pass. A site on a line the coverage report does not hit is uncovered and is not run. The score uml-viewer paints is killed / (killed + survived).
 
@@ -85,8 +85,9 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
 | Rust | `crate::module`, or `crate::module::Type` | the function or method name |
 | Python | the dotted module path, or `module.Class` | the function or method name |
+| PHP | the namespace and class joined with dots, `App.Models.Coupon` | the method or function name |
 
-`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, or a TypeScript `private` / `#` name uses `defn-/`.
+`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, a TypeScript `private` / `#` name, or a PHP `private` method uses `defn-/`.
 
 ## What each language mutates
 
@@ -100,6 +101,7 @@ Tokens inside strings, comments, and quoted Clojure forms are left alone. A repl
 | TypeScript | the Java set, plus `===`/`!==`, `??` to `||`, and `?.` to `.`. A call or index drops `?.` (`a?.()` becomes `a()`). `.js`, `.jsx`, `.mjs`, and `.cjs` use these rules. |
 | Rust | the Java set (`&&`/`||`, `!`, unary `-`). |
 | Python | the Java set, spelled `and`/`or`, `not`, and `True`/`False`. |
+| PHP | the Java set, plus `===`/`!==`, `and`/`or`, and `<>` to `==`. `true`/`false` in any case, keeping the case (`TRUE` becomes `FALSE`). |
 
 ## Tests and coverage
 
@@ -113,6 +115,11 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
+| PHP | `env XDEBUG_MODE=off php vendor/bin/pest <tests>`, or `vendor/bin/phpunit`, with only the tests that name the class | nearest `composer.json` |
+
+A PHP file runs only the `*Test.php` files under `tests/` that name one of its classes: a `use` import (aliased or not), the fully-qualified name anywhere, or a grouped `use App\Models\{User, Coupon}`. A file that no test names is not run; its sites are uncovered and the run says so. Helpers and `Pest.php` are never passed as test files.
+
+PHP resolves symlinks, so in a worker `vendor/` and `artisan` lead back to the real project and Composer would load the original class. Each PHP worker therefore gets `.mutator-php/prepend.php`, which requires the real `vendor/autoload.php` and adds a class-map entry pointing each class in the file at the worker's mutated copy. Composer caches its loader and looks in the class map first, and the entry replaces an optimized classmap's own. The mutant runs as `env XDEBUG_MODE=off php -d auto_prepend_file=<worker>/.mutator-php/prepend.php vendor/bin/pest <tests>`. The baseline runs without it. The tests run serially in that one process: `artisan test` and `--parallel` start other PHP processes, which do not get the `-d` flag (and Herd's PHP ignores `PHP_INI_SCAN_DIR`). A PHP `--test-command` has to pass the flag itself, as `php -d auto_prepend_file="$MUTATOR_PHP_PREPEND" ...`; the variable is empty for the baseline. A Composer classmap-authoritative or APCu setup does not change this, because the class map is read first.
 
 Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
 
