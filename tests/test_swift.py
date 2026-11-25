@@ -3,7 +3,7 @@
 import sys
 from pathlib import Path
 
-from mutator.cli import run
+from mutator.cli import parse_args, run, select_files
 from mutator.functions import sites_in_file
 
 SOURCE = """func place(x: Int, ready: Bool, name: String?) -> Int {
@@ -135,6 +135,25 @@ def test_private_and_fileprivate_join_the_type_namespace(tmp_path):
     assert by_name["hide"].mutant == "true"
     assert by_name["seal"].mutant == "false"
     assert (by_name["open"].original, by_name["open"].mutant) == ("1", "0")
+
+
+def test_swift_test_files_are_skipped_and_production_sources_are_kept(tmp_path, capsys):
+    source = tmp_path / "Sources" / "Demo" / "Box.swift"
+    source.parent.mkdir(parents=True)
+    source.write_text("func open() -> Int { 1 }\n", encoding="utf-8")
+    test_file = tmp_path / "Tests" / "DemoTests" / "Box.swift"
+    test_file.parent.mkdir(parents=True)
+    test_file.write_text("func check() {}\n", encoding="utf-8")
+    named = tmp_path / "Sources" / "Demo" / "BoxTests.swift"
+    named.write_text("func check() {}\n", encoding="utf-8")
+    chosen = select_files(
+        parse_args(["--root", str(tmp_path), str(source), str(test_file), str(named)])
+    )
+    captured = capsys.readouterr()
+    assert chosen == [source.resolve()]
+    assert "Skipping test file" in captured.err
+    assert "Tests/DemoTests/Box.swift" in captured.err
+    assert "BoxTests.swift" in captured.err
 
 
 def test_a_swift_run_records_killed_and_survived_on_the_crapper_namespace(tmp_path, capsys):

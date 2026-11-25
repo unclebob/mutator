@@ -48,6 +48,15 @@ CASES = {
     "src/pkg/foo.test.ts": False,
     "src/pkg/foo.spec.ts": False,
     "src/pkg/conftest.py": False,
+    "Tests/DemoTests/Board.swift": False,
+    "AppTests/Board.swift": False,
+    "Sources/Demo/BoxTests.swift": False,
+    "Sources/Demo/Box.swift": True,
+    ".build/debug/Generated.swift": False,
+    ".swiftpm/cache/Generated.swift": False,
+    "DerivedData/App.swift": False,
+    "src/pkg/Tests/Hidden.swift": False,
+    "src/pkg/test/Kept.swift": True,
 }
 
 
