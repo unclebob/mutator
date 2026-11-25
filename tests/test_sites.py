@@ -234,3 +234,71 @@ def test_a_site_remembers_where_its_statement_starts(tmp_path):
     assert (4, "+", 2) in anchors
     assert (4, "1", 2) in anchors
     assert (7, "true", 6) in anchors
+
+
+PHP_SOURCE = """<?php
+namespace App\\Models;
+
+class Coupon
+{
+    // a > 0 && true
+    public function place(int $a, $b): bool
+    {
+        $label = "x > 1 && true";
+        if (!$a && $b || $a and $b or TRUE) {
+            return $a === 1 || $a !== 0 || $a == 2 || $a != 3 || $a <> 4;
+        }
+        $x = -$a + $b * 2 / 3;
+        $y = $a < 1 || $a <= 2 || $a > 0 || $a >= 5;
+        return False;
+    }
+
+    private static function hide(): int
+    {
+        return 1;
+    }
+}
+"""
+
+
+def test_php_uses_the_java_decisions_spelled_in_php(tmp_path):
+    sites = _sites(tmp_path, "app/Models/Coupon.php", PHP_SOURCE)
+    pairs = {(site.original, site.mutant) for site in sites if site.form_id == "defn/place"}
+    for pair in [
+        ("&&", "||"),
+        ("||", "&&"),
+        ("and", "or"),
+        ("or", "and"),
+        ("!", ""),
+        ("-", ""),
+        ("TRUE", "FALSE"),
+        ("False", "True"),
+        ("===", "!=="),
+        ("!==", "==="),
+        ("==", "!="),
+        ("!=", "=="),
+        ("<>", "=="),
+        ("<", "<="),
+        ("<=", "<"),
+        (">", ">="),
+        (">=", ">"),
+        ("+", "-"),
+        ("*", "/"),
+        ("/", "*"),
+        ("0", "1"),
+        ("1", "0"),
+    ]:
+        assert pair in pairs
+    assert {site.namespace for site in sites} == {"App.Models.Coupon"}
+    assert {site.form_id for site in sites if site.name == "hide"} == {"defn-/hide"}
+
+
+def test_php_strings_and_comments_are_not_sites(tmp_path):
+    source = '<?php\nfunction place() {\n    // a > 0\n    return "a > 0 && true";\n}\n'
+    assert _sites(tmp_path, "src/place.php", source) == []
+
+
+def test_a_php_body_that_names_private_is_still_public(tmp_path):
+    source = "<?php\nclass Box {\n    public function open() { return $this->private > 0; }\n}\n"
+    sites = _sites(tmp_path, "src/Box.php", source)
+    assert {site.form_id for site in sites} == {"defn/open"}

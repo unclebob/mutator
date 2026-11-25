@@ -1,8 +1,9 @@
 """Find mutation sites.
 
 Clojure follows clj-mutate's symbol rules. Go follows mutate4go, including
-one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, and Python
-use the same decisions as Java, spelled in that language. TypeScript also
+one-way `*` to `/`. Java follows mutate4java. TypeScript, Rust, Python, and
+PHP use the same decisions as Java, spelled in that language. PHP spells
+`!=` also as `<>`, and its `true`/`false` ignore case. TypeScript also
 mutates `??` to `||` and `?.` to `.` (removed on a call or index). JavaScript
 files use the TypeScript rules.
 """
@@ -24,6 +25,7 @@ _BINARY = {
     "!=": "==",
     "===": "!==",
     "!==": "===",
+    "<>": "==",
     "&&": "||",
     "||": "&&",
     "??": "||",
@@ -38,7 +40,7 @@ _BINARY_PARENTS = {
     "boolean_operator",
 }
 
-_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator"}
+_UNARY_PARENTS = {"unary_expression", "unary_operator", "not_operator", "unary_op_expression"}
 
 _BOOLEANS = {"true": "false", "false": "true", "True": "False", "False": "True"}
 
@@ -127,7 +129,7 @@ def _category(token: str) -> str:
         return "arithmetic"
     if token in {">", ">=", "<", "<="}:
         return "comparison"
-    if token in {"==", "!=", "===", "!=="}:
+    if token in {"==", "!=", "===", "!==", "<>"}:
         return "equality"
     if token in {"&&", "||", "??", "and", "or"}:
         return "logical"
@@ -305,9 +307,22 @@ def _visit_negation(node, token: str, parent: str, found: list[RawSite]) -> None
         _add(found, node, token, "", "unary")
 
 
+def _php_boolean(token: str) -> str:
+    """PHP's `true` and `false` ignore case. The flip keeps the spelling's case."""
+
+    flipped = "false" if token.lower() == "true" else "true"
+    if token.isupper():
+        return flipped.upper()
+    if token[:1].isupper():
+        return flipped.capitalize()
+    return flipped
+
+
 def _visit_boolean_token(node, token: str, found: list[RawSite]) -> None:
     if node.type in {"true", "false"} and token in _BOOLEANS:
         _add(found, node, token, _BOOLEANS[token], "boolean")
+    elif node.type == "boolean":
+        _add(found, node, token, _php_boolean(token), "boolean")
 
 
 def _visit_constant(node, token: str, found: list[RawSite]) -> None:
