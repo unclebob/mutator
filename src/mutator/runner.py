@@ -10,6 +10,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,33 @@ Command = str | list[str]
 
 # How often a running command's memory and deadline are checked.
 POLL_SECONDS = 0.1
+
+# Process groups of the commands running now, so stop_all() can take them down on a signal.
+_LIVE_GROUPS: set[int] = set()
+_LIVE_LOCK = threading.RLock()  # re-entrant: a signal handler may call stop_all() while run() holds it
+# Set by stop_all(): no new command starts and workers take no new mutant.
+STOP = threading.Event()
+
+
+def _kill_group(group: int) -> None:
+    try:
+        os.killpg(group, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):  # already gone; macOS says EPERM for zombies
+        pass
+
+
+def stop_all() -> None:
+    """Start no more commands and kill the process group of every running one.
+
+    Each command runs in its own session (start_new_session), so a signal to mutator never
+    reaches it; without this, an interrupted run leaves its test processes running.
+    """
+
+    STOP.set()
+    with _LIVE_LOCK:
+        groups = list(_LIVE_GROUPS)
+    for group in groups:
+        _kill_group(group)
 
 
 @dataclass(frozen=True)
@@ -121,10 +149,7 @@ def group_footprint(pgid: int) -> int | None:
 
 
 def _stop(process, code: int, reason: str, peak: int | None):
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):  # exited since the check; macOS says EPERM for zombies
-        pass
+    _kill_group(process.pid)
     output, _err = process.communicate()
     return output, code, reason, peak
 
@@ -245,6 +270,8 @@ class CommandRunner:
 
         if self.verbose:
             print(f"+ ({cwd}) {display_command(command)}", file=sys.stderr)
+        if STOP.is_set():
+            return CommandResult(code=130, timed_out=False, seconds=0.0, output="stopped")
         started = time.monotonic()
         environment = os.environ.copy()
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -263,7 +290,18 @@ class CommandRunner:
         except OSError as exc:
             seconds = time.monotonic() - started
             return CommandResult(code=127, timed_out=False, seconds=seconds, output=str(exc))
-        output, code, reason, peak = _wait(process, started, timeout, memory_limit)
+        with _LIVE_LOCK:
+            _LIVE_GROUPS.add(process.pid)
+        if STOP.is_set():  # stop_all() ran between the check above and the registration
+            _kill_group(process.pid)
+        try:
+            output, code, reason, peak = _wait(process, started, timeout, memory_limit)
+        except BaseException:  # Ctrl-C or a signal's exit: the group would outlive mutator
+            _kill_group(process.pid)
+            raise
+        finally:
+            with _LIVE_LOCK:
+                _LIVE_GROUPS.discard(process.pid)
         seconds = time.monotonic() - started
         return CommandResult(
             code=code,

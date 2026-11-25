@@ -20,7 +20,7 @@ from queue import Empty, Queue
 from threading import Lock
 
 from mutator.model import Site
-from mutator.runner import Command
+from mutator.runner import STOP, Command
 from mutator.sites import apply_site
 
 # Build output and the worker tree itself must not be shared. A link to
@@ -406,7 +406,7 @@ def _drain(
     file_key: str,
     memory_limit: int | None,
 ) -> None:
-    while True:
+    while not STOP.is_set():
         try:
             site = pending.get_nowait()
         except Empty:

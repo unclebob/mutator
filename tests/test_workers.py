@@ -1,9 +1,12 @@
 import errno
 from pathlib import Path
+from queue import Queue
+from threading import Lock
 
 import pytest
 
-from mutator.workers import delete_tree
+from mutator.runner import STOP
+from mutator.workers import _drain, delete_tree
 
 
 def test_delete_tree_retries_when_a_directory_gains_a_file(tmp_path, monkeypatch):
@@ -88,3 +91,14 @@ def test_delete_tree_reraises_after_the_attempts_are_exhausted(tmp_path, monkeyp
     assert caught.value.errno == errno.ENOTEMPTY
     assert sleeps == [0.25, 0.5]
     assert tree.exists()
+
+
+def test_a_stopped_run_takes_no_new_mutant(tmp_path):
+    pending = Queue()
+    pending.put("site")
+    STOP.set()
+    try:
+        _drain(tmp_path, pending, Lock(), {}, tmp_path, "x.py", b"", None, ["true"], tmp_path, 1.0, "x.py", None)
+    finally:
+        STOP.clear()
+    assert pending.qsize() == 1

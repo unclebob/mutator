@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from mutator.crapper_link import ensure_crapper
 from mutator.coverage import covered_lines
 from mutator.engine import mutate_file, restore_backups, scan_file
 from mutator.report import format_results, format_site_log
-from mutator.runner import CommandRunner
+from mutator.runner import CommandRunner, stop_all
 from mutator.sources import is_mutable_source, is_skipped_test, iter_source_files
 
 
@@ -633,5 +634,26 @@ def run(argv: list[str] | None = None) -> int:
     return _mutate_files(options, root, files)
 
 
+def _stop_on_signals() -> None:
+    """Ctrl-C, SIGTERM and SIGHUP kill the running mutants' process groups first.
+
+    The mutants run in their own sessions, so only mutator gets the signal. Ctrl-C then raises
+    KeyboardInterrupt as usual; SIGTERM and SIGHUP exit 128 + signal. A signal that is already
+    ignored (nohup, a background job) stays ignored.
+    """
+
+    def stop(signum, _frame):
+        stop_all()
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        number = getattr(signal, name, None)
+        if number is not None and signal.getsignal(number) is not signal.SIG_IGN:
+            signal.signal(number, stop)
+
+
 def main(argv: list[str] | None = None) -> None:
+    _stop_on_signals()
     sys.exit(run(argv))
