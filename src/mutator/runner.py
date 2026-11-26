@@ -72,6 +72,43 @@ def display_command(command: Command) -> str:
     return " ".join(shlex.quote(part) for part in command)
 
 
+def _popen_kwargs() -> dict[str, object]:
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            pass
+        if process.poll() is None:
+            process.kill()
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def _collect_output(process: subprocess.Popen, timeout: float | None) -> tuple[int, bool, str]:
+    try:
+        output, _err = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        output, _err = process.communicate()
+        return 124, True, output or ""
+    code = process.returncode if process.returncode is not None else 1
+    return code, False, output or ""
+
+
 class CommandRunner:
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
@@ -97,24 +134,16 @@ class CommandRunner:
                 shell=isinstance(command, str),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                start_new_session=True,
                 text=True,
                 env=environment,
+                **_popen_kwargs(),
             )
         except OSError as exc:
             seconds = time.monotonic() - started
             return CommandResult(code=127, timed_out=False, seconds=seconds, output=str(exc))
-        try:
-            output, _err = process.communicate(timeout=timeout)
-            code = process.returncode if process.returncode is not None else 1
-            timed_out = False
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            output, _err = process.communicate()
-            code = 124
-            timed_out = True
+        code, timed_out, output = _collect_output(process, timeout)
         seconds = time.monotonic() - started
-        return CommandResult(code=code, timed_out=timed_out, seconds=seconds, output=output or "")
+        return CommandResult(code=code, timed_out=timed_out, seconds=seconds, output=output)
 
 
 def nearest(start: Path, marker: str, stop: Path) -> Path | None:
@@ -152,15 +181,21 @@ def _clojure_command(directory: Path) -> list[str]:
     return ["clj", "-M:test"]
 
 
+def _interpreter_path(directory: Path, name: str) -> Path:
+    if os.name == "nt":
+        return (directory / name / "Scripts" / "python.exe").absolute()
+    return (directory / name / "bin" / "python").absolute()
+
+
 def _project_interpreter(directory: Path) -> str:
     """The project's virtualenv, or this process when the project has none.
 
     The path stays absolute and the symlink is left in place. A worker does
-    not link ``.venv``, and resolving ``bin/python`` would leave the virtualenv.
+    not link ``.venv``, and resolving the interpreter would leave the virtualenv.
     """
 
     for name in (".venv", "venv"):
-        candidate = (directory / name / "bin" / "python").absolute()
+        candidate = _interpreter_path(directory, name)
         if candidate.is_file() and os.access(candidate, os.X_OK):
             return str(candidate)
     return sys.executable
