@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from mutator.coverage import covered_lines
 
 
@@ -110,6 +113,87 @@ def _go_source(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("package main\nfunc main() {}\n", encoding="utf-8")
     return path
+
+
+def _swift_report(root: Path, payload: dict) -> None:
+    report = root / "target" / "coverage" / "swift" / "llvm-cov.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_swift_llvm_cov_regions_mark_hit_lines(tmp_path):
+    source = tmp_path / "Sources" / "Demo" / "Box.swift"
+    source.parent.mkdir(parents=True)
+    source.write_text("func choose(x: Int) -> Int { 1 }\n", encoding="utf-8")
+    _swift_report(
+        tmp_path,
+        {
+            "type": "llvm.coverage.json.export",
+            "data": [
+                {
+                    "files": [{"filename": str(source)}],
+                    "functions": [
+                        {
+                            "regions": [
+                                [2, 1, 2, 2, 1, 0, 0, 0],
+                                [4, 1, 4, 2, 0, 0, 0, 0],
+                                [3, 9, 3, 18, 0, 0, 0, 4],
+                            ]
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    assert covered_lines(tmp_path, source, "swift") == {2}
+    assert covered_lines(tmp_path, tmp_path / "Sources" / "Demo" / "Missing.swift", "swift") is None
+
+
+def test_swift_xccov_summaries_mark_a_covered_function_line(tmp_path):
+    source = tmp_path / "Sources" / "Demo" / "Box.swift"
+    source.parent.mkdir(parents=True)
+    source.write_text("func choose(x: Int) -> Int { 1 }\n", encoding="utf-8")
+    _swift_report(
+        tmp_path,
+        {
+            "targets": [
+                {
+                    "files": [
+                        {
+                            "path": "Sources/Demo/Box.swift",
+                            "functions": [
+                                {"lineNumber": 1, "coveredLines": 1, "executableLines": 2},
+                                {"lineNumber": 9, "coveredLines": 0, "executableLines": 1},
+                            ],
+                        }
+                    ]
+                }
+            ]
+        },
+    )
+    assert covered_lines(tmp_path, source, "swift") == {1}
+
+
+def test_swift_regions_with_no_hits_are_present_and_empty(tmp_path):
+    source = tmp_path / "Sources" / "Demo" / "Box.swift"
+    source.parent.mkdir(parents=True)
+    source.write_text("func choose(x: Int) -> Int { 1 }\n", encoding="utf-8")
+    _swift_report(
+        tmp_path,
+        {
+            "type": "llvm.coverage.json.export",
+            "data": [
+                {
+                    "files": [{"filename": str(source)}],
+                    "functions": [{"regions": [[2, 1, 2, 2, 0, 0, 0, 0]]}],
+                }
+            ],
+        },
+    )
+    assert covered_lines(tmp_path, source, "swift") == set()
+    empty = tmp_path / "other"
+    empty.mkdir()
+    assert covered_lines(empty, source, "swift") is None
 
 
 def test_go_profile_keyed_by_import_path_marks_hit_lines(tmp_path):

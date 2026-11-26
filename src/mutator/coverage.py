@@ -2,8 +2,10 @@
 
 Java uses JaCoCo source lines. Go uses statement profiles, which name a
 file by its module import path, the way crapper names it. Clojure prefers
-Cloverage's per-line form counts, then LCOV. The other languages use LCOV.
-A file that does not appear in a report has no coverage data.
+Cloverage's per-line form counts, then LCOV. Swift uses the regions crapper
+reads from llvm-cov JSON, or an xccov function summary when the report has
+no regions. The other languages use LCOV. A file that does not appear in a
+report has no coverage data.
 """
 
 from __future__ import annotations
@@ -199,6 +201,22 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
     return found
 
 
+def _swift_hits(record) -> set[int]:
+    """Lines crapper counted. A region is one line; an xccov summary is the function line."""
+
+    if record.regions:
+        return {line for line, count in record.regions if count > 0}
+    return {line for line, covered, _executable in record.summaries if covered > 0}
+
+
+def _swift_lines(bundle, source_path: str) -> set[int] | None:
+    crapper = ensure_crapper()
+    record = crapper.coverage._lookup(bundle.swift, source_path, bundle.source_parts)
+    if record is None:
+        return None
+    return _swift_hits(record)
+
+
 def _go_lines(root: Path, profile, source_path: str) -> set[int] | None:
     if not profile:
         return None
@@ -226,6 +244,8 @@ def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | No
     bundle = crapper.coverage.load_bundle(root)
     if language == "go":
         return _go_lines(root, bundle.go_profile, path)
+    if language == "swift":
+        return _swift_lines(bundle, path)
     if language == "clojure":
         html = _covered_from_pairs(_lookup(bundle.form_html, path))
         if html is not None:

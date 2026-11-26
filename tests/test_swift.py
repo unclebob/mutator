@@ -330,6 +330,35 @@ def test_a_run_invokes_swift_test_and_xcodebuild_with_the_destination(tmp_path, 
     assert destination in xcode_text.splitlines()
 
 
+def test_scan_marks_a_swift_line_uncovered_when_llvm_cov_did_not_hit_it(tmp_path, capsys):
+    import json
+
+    source = tmp_path / "Sources" / "Demo" / "Box.swift"
+    source.parent.mkdir(parents=True)
+    source.write_text("func place(x: Int) -> Int {\n    return x > 0 ? x : 0\n}\n", encoding="utf-8")
+    report = tmp_path / "target" / "coverage" / "swift" / "llvm-cov.json"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        json.dumps(
+            {
+                "type": "llvm.coverage.json.export",
+                "data": [
+                    {
+                        "files": [{"filename": str(source)}],
+                        "functions": [{"regions": [[1, 1, 1, 2, 1, 0, 0, 0]]}],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    code = run(["--scan", "--use-existing-coverage", "--root", str(tmp_path), str(source)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "uncovered" in captured.out
+    assert "x > 0 -> !(x > 0)" in captured.out or "> -> >=" in captured.out
+
+
 def test_a_swift_run_records_killed_and_survived_on_the_crapper_namespace(tmp_path, capsys):
     relative = "Sources/Demo/Place.swift"
     path = tmp_path / relative
