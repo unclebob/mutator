@@ -47,17 +47,17 @@ def _as_suffix(longer: tuple[str, ...], shorter: tuple[str, ...]) -> int | None:
 def _suffix_rank(key_parts: tuple[str, ...], source: tuple[str, ...]) -> tuple[int, int] | None:
     """Rank `(0, extra)` is a key that ends with the source. `(1, missing)` is the reverse.
 
-    An equal path is rank `(0, 0)`. A shorter key matches only when the source
-    is strictly longer, so an equal path is not also a missing-part match.
+    An equal path is rank `(0, 0)`. A shorter key matches only as a suffix of
+    a longer source.
     """
 
-    if not source or not key_parts:
+    if not source:
+        return None
+    if not key_parts:
         return None
     extra = _as_suffix(key_parts, source)
     if extra is not None:
         return (0, extra)
-    if len(source) <= len(key_parts):
-        return None
     missing = _as_suffix(source, key_parts)
     if missing is None:
         return None
@@ -71,21 +71,21 @@ def _rank(key_parts: tuple[str, ...], sources: list[tuple[str, ...]]) -> tuple[i
     same rank are ambiguous.
     """
 
-    best: tuple[int, int] | None = None
+    found: list[tuple[int, int]] = []
     for source in sources:
         rank = _suffix_rank(key_parts, source)
-        if rank is None:
-            continue
-        if best is None or rank < best:
-            best = rank
-    return best
+        if rank is not None:
+            found.append(rank)
+    if not found:
+        return None
+    return min(found)
 
 
 def _source_parts(candidates: list[str]) -> list[tuple[str, ...]]:
     sources: list[tuple[str, ...]] = []
     for candidate in candidates:
         parts = _parts(candidate)
-        if parts and parts not in sources:
+        if parts:
             sources.append(parts)
     return sources
 
@@ -202,10 +202,22 @@ def _jacoco_index(root: Path) -> dict[str, set[int]]:
 
 
 def _swift_hits(record) -> set[int]:
-    """Lines crapper counted. A region is one line; an xccov summary is the function line."""
+    """Lines the tests hit.
+
+    A region covers every line from its start through its end. `line_covered`
+    asks the innermost region, so a nested region with count zero leaves those
+    lines uncovered, and a line in no region stays uncovered. An xccov summary
+    has no regions, so the function line is covered when that function has
+    covered lines.
+    """
 
     if record.regions:
-        return {line for line, count in record.regions if count > 0}
+        covered: set[int] = set()
+        for start, end, _count in record.regions:
+            for line in range(start, end + 1):
+                if record.line_covered(line):
+                    covered.add(line)
+        return covered
     return {line for line, covered, _executable in record.summaries if covered > 0}
 
 
