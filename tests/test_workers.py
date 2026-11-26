@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from mutator.workers import delete_tree
+from mutator.workers import delete_tree, importers_of
 
 
 def test_delete_tree_retries_when_a_directory_gains_a_file(tmp_path, monkeypatch):
@@ -88,3 +88,38 @@ def test_delete_tree_reraises_after_the_attempts_are_exhausted(tmp_path, monkeyp
     assert caught.value.errno == errno.ENOTEMPTY
     assert sleeps == [0.25, 0.5]
     assert tree.exists()
+
+
+def _write(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_importers_of_follows_extensionless_and_index_imports(tmp_path):
+    _write(tmp_path / "src" / "target.ts", "export const x = 1;\n")
+    _write(tmp_path / "src" / "direct.ts", "import { x } from './target';\n")
+    _write(tmp_path / "src" / "lib" / "index.ts", "export * from '../direct';\n")
+    _write(tmp_path / "src" / "outer.ts", "import './lib';\n")
+    _write(tmp_path / "src" / "climbing.ts", "import './gone/../target';\n")
+    _write(tmp_path / "src" / "unrelated.ts", "import './missing';\n")
+    assert importers_of(tmp_path, "src/target.ts") == {
+        "src/climbing.ts",
+        "src/direct.ts",
+        "src/lib/index.ts",
+        "src/outer.ts",
+    }
+
+
+def test_importers_of_resolves_only_candidates_that_exist(tmp_path, monkeypatch):
+    _write(tmp_path / "src" / "target.ts", "export const x = 1;\n")
+    _write(tmp_path / "src" / "user.ts", "import { x } from './target';\n")
+    resolved = []
+    original_resolve = Path.resolve
+
+    def resolve(self, *args, **kwargs):
+        resolved.append(self)
+        return original_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", resolve)
+    importers_of(tmp_path, "src/target.ts")
+    assert not [path for path in resolved if not path.exists()]

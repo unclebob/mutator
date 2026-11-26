@@ -222,6 +222,22 @@ def _inside(root: Path, path: Path) -> Path | None:
     return root / relative
 
 
+def _climbs_after_a_name(specifier: str) -> bool:
+    """Whether ``..`` follows a named segment, as in ``./a/../b``.
+
+    Such a path resolves lexically even when ``a`` does not exist, so a
+    missing candidate cannot be ruled out by asking the file system.
+    """
+
+    named = False
+    for segment in specifier.split("/"):
+        if segment == ".." and named:
+            return True
+        if segment not in ("", ".", ".."):
+            named = True
+    return False
+
+
 def _imported_files(importer: Path, root: Path) -> set[Path]:
     try:
         text = importer.read_text(encoding="utf-8")
@@ -229,7 +245,11 @@ def _imported_files(importer: Path, root: Path) -> set[Path]:
         return set()
     found = set()
     for specifier in _specifiers(text):
+        check_existence_first = not _climbs_after_a_name(specifier)
         for candidate in _candidates(importer.parent, specifier):
+            # Resolving a path is slow; most candidates do not exist.
+            if check_existence_first and not candidate.is_file():
+                continue
             local = _inside(root, candidate)
             if local is not None and local.is_file():
                 found.add(local.resolve())
