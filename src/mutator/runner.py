@@ -240,11 +240,17 @@ def _xcode_scheme(project: Path, requested: str | None) -> str:
 
 
 def _xcode_command(project: Path, scheme: str | None, destination: str | None) -> list[str]:
+    """The project path is relative to the working directory, which is ``project.parent``.
+
+    An absolute path would name the original tree. The worker maps the working
+    directory and would then compile the unmutated project.
+    """
+
     command = [
         "xcodebuild",
         "test",
         _xcode_flag(project),
-        str(project),
+        project.name,
         "-scheme",
         _xcode_scheme(project, scheme),
     ]

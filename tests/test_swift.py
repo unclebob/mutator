@@ -214,7 +214,7 @@ def test_an_xcode_project_runs_xcodebuild_with_scheme_and_destination(tmp_path):
         "xcodebuild",
         "test",
         "-project",
-        str(project.resolve()),
+        project.name,
         "-scheme",
         "App",
         "-destination",
@@ -235,7 +235,7 @@ def test_a_workspace_uses_its_flag_and_a_missing_scheme_uses_the_project_name(tm
     _write(workspace / "xcshareddata" / "xcschemes" / "App.xcscheme", "<Scheme/>\n")
     source = _write(root / "App" / "ContentView.swift", "func body() -> Int { 1 }\n")
     command, directory = plan_command(root, source, "swift", None)
-    assert command[:4] == ["xcodebuild", "test", "-workspace", str(workspace.resolve())]
+    assert command[:4] == ["xcodebuild", "test", "-workspace", workspace.name]
     assert "-destination" not in command
     assert directory == root.resolve()
 
@@ -261,8 +261,26 @@ def test_a_package_is_tested_with_swift_and_an_app_outside_it_with_xcodebuild(tm
     app_command, app_dir = plan_command(root, app_source, "swift", None)
     assert package_command == ["swift", "test"]
     assert package_dir == (root / "libs" / "Demo").resolve()
-    assert app_command[2:6] == ["-project", str(project.resolve()), "-scheme", "App"]
+    assert app_command[2:6] == ["-project", project.name, "-scheme", "App"]
     assert app_dir == root.resolve()
+
+
+def test_a_worker_copies_an_xcode_bundle_and_links_a_file_with_that_suffix(tmp_path):
+    from mutator.workers import create_workers, new_run_dir
+
+    root = tmp_path / "ios"
+    source = _write(root / "App" / "ContentView.swift", "func body() -> Int { 1 }\n")
+    _write(root / "App.xcodeproj" / "project.pbxproj", "path = App/ContentView.swift;\n")
+    _write(root / "Notes.xcodeproj", "not a bundle\n")
+    worker = create_workers(
+        new_run_dir(root), root, "App/ContentView.swift", source.read_bytes(), 1
+    )[0]
+    bundle = worker / "App.xcodeproj"
+    assert bundle.is_dir() and not bundle.is_symlink()
+    assert (bundle / "project.pbxproj").read_text(encoding="utf-8").startswith("path =")
+    linked = worker / "Notes.xcodeproj"
+    assert linked.is_symlink()
+    assert linked.read_text(encoding="utf-8") == "not a bundle\n"
 
 
 def test_a_worker_does_not_share_swift_build_directories(tmp_path):
@@ -336,10 +354,183 @@ def test_a_run_invokes_swift_test_and_xcodebuild_with_the_destination(tmp_path, 
     assert xcode_code == 3
     assert "xcodebuild" not in xcode_text
     assert "-project" in xcode_text
-    assert str(project.resolve()) in xcode_text
+    assert "My App.xcodeproj" in xcode_text.splitlines()
     assert "-scheme" in xcode_text
     assert "App" in xcode_text.splitlines()
     assert destination in xcode_text.splitlines()
+
+
+_IOS_BODY = "func body(x: Int) -> Int {\n    if x > 0 {\n        return x\n    }\n    return 0\n}\n"
+
+# A stand-in for xcodebuild. It realpaths the project it was given, then reads
+# the Swift file named in that project. A symlink, or an absolute path back to
+# the original tree, compiles the unmutated source and cannot kill a mutant.
+_XCODEBUILD = """#!/usr/bin/env python3
+import os
+import re
+import sys
+from pathlib import Path
+
+def flag(argv, name):
+    if name not in argv:
+        return None
+    return argv[argv.index(name) + 1]
+
+def resolved(start, value):
+    path = Path(value)
+    if not path.is_absolute():
+        path = start / path
+    return path.resolve()
+
+argv = sys.argv[1:]
+cwd = Path.cwd()
+log = Path(os.environ["XCODE_LOG"])
+project = flag(argv, "-project")
+workspace = flag(argv, "-workspace")
+scheme = flag(argv, "-scheme")
+with log.open("a", encoding="utf-8") as handle:
+    handle.write(str(cwd) + "\\n")
+    for arg in argv:
+        handle.write(arg + "\\n")
+    handle.write("---\\n")
+bundle_arg = project or workspace
+if bundle_arg is None or scheme is None:
+    raise SystemExit(1)
+bundle = resolved(cwd, bundle_arg)
+scheme_file = bundle / "xcshareddata" / "xcschemes" / (scheme + ".xcscheme")
+if not scheme_file.is_file():
+    raise SystemExit(1)
+project_bundle = bundle
+if workspace is not None:
+    data = (bundle / "contents.xcworkspacedata").read_text(encoding="utf-8")
+    named = re.search(r"[\\w./-]+\\.xcodeproj", data)
+    if named is None:
+        raise SystemExit(1)
+    project_bundle = resolved(bundle.parent, named.group(0))
+pbx = project_bundle / "project.pbxproj"
+if not pbx.is_file():
+    raise SystemExit(1)
+sources = re.findall(r"[\\w./-]+\\.swift", pbx.read_text(encoding="utf-8"))
+if not sources:
+    raise SystemExit(1)
+body = ""
+for relative in sources:
+    file = (project_bundle.parent / relative).resolve()
+    body += file.read_text(encoding="utf-8")
+with log.open("a", encoding="utf-8") as handle:
+    handle.write("compiled " + str(project_bundle) + "\\n")
+    handle.write(body)
+    handle.write("===\\n")
+if ">=" in body or "!(" in body:
+    raise SystemExit(1)
+raise SystemExit(0)
+"""
+
+
+def _labels(output: str, description: str) -> list[str]:
+    return [line.split()[0] for line in output.splitlines() if description in line]
+
+
+def _install_xcodebuild(bin_dir: Path, log: Path) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    script = bin_dir / "xcodebuild"
+    script.write_text(_XCODEBUILD, encoding="utf-8")
+    script.chmod(0o755)
+
+
+def _ios_source(root: Path, project_name: str) -> Path:
+    project = root / project_name
+    _write(project / "project.pbxproj", "path = App/ContentView.swift;\n")
+    _write(project / "xcshareddata" / "xcschemes" / "App.xcscheme", "<Scheme/>\n")
+    _write(project / "xcshareddata" / "xcschemes" / "Zed.xcscheme", "<Scheme/>\n")
+    return _write(root / "App" / "ContentView.swift", _IOS_BODY)
+
+
+def _assert_worker_saw_the_mutant(output: str, log_text: str, source: Path) -> None:
+    assert _labels(output, "> -> >=") == ["KILLED"]
+    assert _labels(output, "x > 0 -> !(x > 0)") == ["KILLED"]
+    assert _labels(output, "0 -> 1") == ["SURVIVED", "SURVIVED"]
+    compiled = log_text.split("compiled ")[1:]
+    worker = [chunk for chunk in compiled if "mutation-workers" in chunk.splitlines()[0]]
+    assert worker
+    assert any(">=" in chunk or "!(" in chunk for chunk in worker)
+    assert any("return 1" in chunk for chunk in worker)
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+
+
+def test_xcodebuild_compiles_the_mutant_in_the_worker(tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "xcode.log"
+    _install_xcodebuild(bin_dir, log)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("XCODE_LOG", str(log))
+    root = tmp_path / "ios"
+    source = _ios_source(root, "My App.xcodeproj")
+    destination = "platform=iOS Simulator,name=iPhone 16"
+    code = run(
+        [
+            "--no-coverage",
+            "--root",
+            str(root),
+            "--max-workers",
+            "1",
+            "--xcode-destination",
+            destination,
+        ]
+    )
+    captured = capsys.readouterr()
+    text = log.read_text(encoding="utf-8")
+    assert code == 3
+    assert destination in text.splitlines()
+    assert "My App.xcodeproj" in text.splitlines()
+    scheme_at = text.splitlines().index("-scheme")
+    assert text.splitlines()[scheme_at + 1] == "App"
+    _assert_worker_saw_the_mutant(captured.out, text, source)
+    snapshot = (root / ".metrics" / "mutate" / "My App.edn").read_text(encoding="utf-8")
+    assert ":killed" in snapshot
+    assert ":survived" in snapshot
+
+
+def test_xcodebuild_workspace_compiles_the_mutant_in_the_worker(tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "xcode.log"
+    _install_xcodebuild(bin_dir, log)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("XCODE_LOG", str(log))
+    root = tmp_path / "ios"
+    _ios_source(root, "App.xcodeproj")
+    workspace = root / "App.xcworkspace"
+    _write(workspace / "contents.xcworkspacedata", '<FileRef location = "group:App.xcodeproj">\n')
+    _write(workspace / "xcshareddata" / "xcschemes" / "App.xcscheme", "<Scheme/>\n")
+    source = root / "App" / "ContentView.swift"
+    code = run(["--no-coverage", "--root", str(root), "--max-workers", "1"])
+    captured = capsys.readouterr()
+    text = log.read_text(encoding="utf-8")
+    assert code == 3
+    assert "App.xcworkspace" in text.splitlines()
+    assert "-workspace" in text.splitlines()
+    _assert_worker_saw_the_mutant(captured.out, text, source)
+    snapshot = (root / ".metrics" / "mutate" / "App.edn").read_text(encoding="utf-8")
+    assert ":killed" in snapshot
+    assert ":survived" in snapshot
+
+
+def test_a_failing_xcodebuild_baseline_records_no_kills(tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    tool = bin_dir / "xcodebuild"
+    tool.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    root = tmp_path / "ios"
+    source = _ios_source(root, "App.xcodeproj")
+    code = run(["--no-coverage", "--root", str(root), "--max-workers", "1"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Baseline failed" in captured.err
+    assert "xcodebuild" in captured.err
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+    assert not (root / ".metrics" / "mutate").exists()
 
 
 def test_scan_marks_a_swift_line_uncovered_when_llvm_cov_did_not_hit_it(tmp_path, capsys):
