@@ -1,10 +1,12 @@
 """Run mutants in symlink overlays, the way clj-mutate runs its workers.
 
 Each worker is a directory under target/mutation-workers. Project files are
-linked in. An Xcode project or workspace is copied instead, because xcodebuild
-realpaths a symlink and would compile the original tree. The file under test
-is a private copy, so workers can mutate it at the same time without touching
-the original tree. The overlay is removed when the file's mutants finish.
+linked in. An Xcode project, workspace, or asset catalog is copied instead.
+xcodebuild realpaths a project symlink and would compile the original tree.
+actool does not follow a symlinked catalog, so a mutant that still compiles
+is reported killed. The file under test is a private copy, so workers can
+mutate it at the same time without touching the original tree. The overlay
+is removed when the file's mutants finish.
 """
 
 from __future__ import annotations
@@ -143,10 +145,15 @@ def _copy_configs(worker: Path, root: Path, relative: str) -> None:
         (worker / name).write_bytes(source.read_bytes())
 
 
-def _xcode_bundle(path: Path) -> bool:
-    """An Xcode project or workspace. xcodebuild realpaths it before compiling."""
+def _copied_bundle(path: Path) -> bool:
+    """A directory the build realpaths or will not follow as a link.
 
-    return path.suffix in {".xcodeproj", ".xcworkspace"} and path.is_dir()
+    A file that merely ends in one of these suffixes stays a link. So does a
+    directory that only contains a catalog: opening the catalog follows that
+    parent link and sees the real tree.
+    """
+
+    return path.is_dir() and path.suffix in {".xcodeproj", ".xcworkspace", ".xcassets"}
 
 
 def _copy_bundle(source: Path, destination: Path) -> None:
@@ -174,7 +181,7 @@ def _link_children(worker_dir: Path, real_dir: Path, skip: set[str]) -> None:
         destination = worker_dir / child.name
         if destination.exists() or destination.is_symlink():
             continue
-        if _xcode_bundle(child):
+        if _copied_bundle(child):
             _copy_bundle(child, destination)
             continue
         symlink(destination, child)
