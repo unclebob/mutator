@@ -65,7 +65,6 @@ _SWIFT_SKIP = {
     "repeat",
     "{",
     "}",
-    ",",
     "statements",
     "if_statement",
     "comment",
@@ -368,8 +367,6 @@ def _visit_leaf(node, data: bytes, language: str, found: list[RawSite]) -> None:
 
 
 def _ends_swift_conditions(node, child) -> bool:
-    if child.type == "else":
-        return True
     if node.type == "repeat_while_statement":
         return False
     return child.type in {"{", "statements"}
@@ -383,8 +380,10 @@ def _swift_conditions(node):
     for child in node.children:
         if _ends_swift_conditions(node, child):
             break
-        if child.type in _SWIFT_SKIP:
+        if child.type == ",":
             binding = False
+            continue
+        if child.type in _SWIFT_SKIP:
             continue
         if child.type == "value_binding_pattern":
             binding = True

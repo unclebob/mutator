@@ -35,15 +35,14 @@ def is_test_path(relative: Path, test_dirs: set[str]) -> bool:
 
 
 def _swift_test_relative(relative: Path) -> bool:
-    """Swift test targets are ``Tests``, ``*Tests``, or ``*Tests.swift``.
+    """A Swift directory named ``Tests`` or ending in ``Tests`` is a test target.
 
+    ``*Tests.swift`` is crapper's filename rule, applied to the file name.
     ``test`` at any depth stays a production path. Swift's name is ``Tests``.
     """
 
     if relative.suffix != ".swift":
         return False
-    if relative.name.endswith("Tests.swift"):
-        return True
     return any(part.endswith("Tests") for part in relative.parts[:-1])
 
 

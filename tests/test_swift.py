@@ -1,8 +1,11 @@
 """Swift mutation sites join the functions crapper reports."""
 
 import os
+import shutil
 import sys
 from pathlib import Path
+
+import pytest
 
 from mutator.cli import parse_args, run, select_files
 from mutator.functions import sites_in_file
@@ -177,6 +180,14 @@ def test_xcode_options_require_a_value():
     assert "xcodebuild" in help_text
     assert "*Tests.swift" in help_text
     assert parse_args(["--xcode-scheme"]).exit_code == 1
+
+
+def test_a_swift_file_without_a_package_or_xcode_project_uses_swift_test(tmp_path):
+    root = tmp_path / "loose"
+    source = _write(root / "Place.swift", "func place() -> Int { 1 }\n")
+    command, directory = plan_command(root, source, "swift", None)
+    assert command == ["swift", "test"]
+    assert directory == root.resolve()
 
 
 def test_a_swift_package_runs_swift_test(tmp_path):
@@ -358,6 +369,55 @@ def test_scan_marks_a_swift_line_uncovered_when_llvm_cov_did_not_hit_it(tmp_path
     assert code == 0
     assert "uncovered" in captured.out
     assert "x > 0 -> !(x > 0)" in captured.out or "> -> >=" in captured.out
+
+
+def _swift_on_path(monkeypatch) -> None:
+    if shutil.which("swift"):
+        return
+    toolchains = Path.home() / ".local" / "share" / "swiftly" / "toolchains"
+    binaries = sorted(toolchains.glob("*/usr/bin/swift")) if toolchains.is_dir() else []
+    if not binaries:
+        pytest.skip("swift is not installed")
+    monkeypatch.setenv("PATH", f"{binaries[-1].parent}{os.pathsep}{os.environ.get('PATH', '')}")
+
+
+def test_swift_test_kills_and_survives_mutants_in_a_package(tmp_path, monkeypatch, capsys):
+    _swift_on_path(monkeypatch)
+    root = tmp_path / "pkg"
+    _write(
+        root / "Package.swift",
+        "// swift-tools-version:5.9\n"
+        "import PackageDescription\n"
+        "let package = Package(name: \"Demo\", targets: [\n"
+        "    .target(name: \"Demo\"),\n"
+        "    .testTarget(name: \"DemoTests\", dependencies: [\"Demo\"]),\n"
+        "])\n",
+    )
+    source = _write(
+        root / "Sources" / "Demo" / "Place.swift",
+        "func place(x: Int) -> Int {\n    if x > 0 {\n        return x\n    }\n    return 0\n}\n",
+    )
+    _write(
+        root / "Tests" / "DemoTests" / "PlaceTests.swift",
+        "import XCTest\n"
+        "@testable import Demo\n"
+        "final class PlaceTests: XCTestCase {\n"
+        "    func testTwo() { XCTAssertEqual(place(x: 2), 2) }\n"
+        "    func testOne() { XCTAssertEqual(place(x: 1), 1) }\n"
+        "    func testZero() { XCTAssertEqual(place(x: 0), 0) }\n"
+        "}\n",
+    )
+    code = run(
+        ["--no-coverage", "--mutate-all", "--max-workers", "1", "--root", str(root)]
+    )
+    captured = capsys.readouterr()
+    assert code == 3
+    assert "KILLED" in captured.out
+    assert "SURVIVED" in captured.out
+    text = (root / ".metrics" / "mutate" / "Demo.edn").read_text(encoding="utf-8")
+    assert ':namespace "Demo"' in text
+    assert ':id "defn/place"' in text
+    assert source.read_text(encoding="utf-8").startswith("func place")
 
 
 def test_a_swift_run_records_killed_and_survived_on_the_crapper_namespace(tmp_path, capsys):
