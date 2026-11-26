@@ -125,7 +125,7 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 ./mutator --xcode-scheme App --xcode-destination 'platform=iOS Simulator,name=iPhone 16'
 ```
 
-Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so. Swift coverage is the JSON crapper writes under `target/coverage/swift/`: llvm-cov export after `swift test --enable-code-coverage`, or `xcrun xccov view --report --json` after `xcodebuild test -enableCodeCoverage YES`. A hit region marks that line. An xccov summary has no regions, so the function's line is covered when that function has covered lines.
+Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so. Swift coverage is the JSON crapper writes under `target/coverage/swift/`: llvm-cov export after `swift test --enable-code-coverage`, or `xcrun xccov view --report --json` after `xcodebuild test -enableCodeCoverage YES`. A hit region marks every line from its start through its end. A nested region with count zero leaves those lines uncovered, and a line in no region is uncovered. An xccov summary has no regions, so the function's line is covered when that function has covered lines.
 
 ## Development
 

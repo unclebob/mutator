@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from mutator.cli import run
 from mutator.coverage import covered_lines
 
 
@@ -76,6 +77,43 @@ def test_lcov_does_not_let_a_shorter_path_steal_hits(tmp_path):
     long.write_text("def place():\n    return 1\n", encoding="utf-8")
     assert covered_lines(tmp_path, long, "python") == {1}
     assert covered_lines(tmp_path, short, "python") == {2}
+
+
+def test_a_prefixed_report_path_beats_a_shorter_suffix(tmp_path):
+    source = _py_source(tmp_path)
+    parts = [part for part in source.resolve().as_posix().split("/") if part]
+    prefixed = "x/y/" + "/".join(parts)
+    shorter = "/".join(parts[1:])
+    _lcov(tmp_path, [(prefixed, 2), (shorter, 9)])
+    assert covered_lines(tmp_path, source, "python") == {2}
+
+
+def _lcov(root: Path, records: list[tuple[str, int]]) -> None:
+    report = root / "target" / "coverage" / "python" / "lcov.info"
+    report.parent.mkdir(parents=True)
+    chunks = [f"SF:{name}\nDA:{line},1\nend_of_record\n" for name, line in records]
+    report.write_text("".join(chunks), encoding="utf-8")
+
+
+def _py_source(tmp_path: Path) -> Path:
+    source = tmp_path / "src" / "app.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("def place():\n    return 1\n", encoding="utf-8")
+    return source
+
+
+def test_a_trailing_slash_on_the_report_path_still_marks_the_file(tmp_path):
+    source = _py_source(tmp_path)
+    _lcov(tmp_path, [(source.resolve().as_posix() + "/", 2)])
+    assert covered_lines(tmp_path, source, "python") == {2}
+
+
+def test_the_first_of_two_equal_paths_keeps_its_hits(tmp_path):
+    source = _py_source(tmp_path)
+    parts = [part for part in source.resolve().as_posix().split("/") if part]
+    first = "pre/" + "/".join(parts)
+    _lcov(tmp_path, [(first, 2), (first + "/", 9)])
+    assert covered_lines(tmp_path, source, "python") == {2}
 
 
 def test_go_profile_does_not_cross_files(tmp_path):
@@ -194,6 +232,85 @@ def test_swift_regions_with_no_hits_are_present_and_empty(tmp_path):
     empty = tmp_path / "other"
     empty.mkdir()
     assert covered_lines(empty, source, "swift") is None
+
+
+# Line 5 is the end of a region that starts on line 4. Line 2 is in no region.
+# Lines 6 and 7 are a nested region whose count is zero.
+_PLACE = """func place(x: Int) -> Int {
+    let ready = true
+    let extra = 1
+    if x > 0 {
+        return x + 1
+    }
+    return 0
+}
+"""
+
+
+def _place(tmp_path: Path) -> Path:
+    source = tmp_path / "Sources" / "Demo" / "Place.swift"
+    source.parent.mkdir(parents=True)
+    source.write_text(_PLACE, encoding="utf-8")
+    return source
+
+
+def _llvm_regions(root: Path, source: Path, regions: list) -> None:
+    _swift_report(
+        root,
+        {
+            "type": "llvm.coverage.json.export",
+            "data": [
+                {
+                    "files": [{"filename": str(source)}],
+                    "functions": [{"regions": regions}],
+                }
+            ],
+        },
+    )
+
+
+def _scan_line(output: str, fragment: str) -> str:
+    matches = [line for line in output.splitlines() if fragment in line]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def test_a_multiline_covered_region_covers_the_mutation_on_its_end_line(tmp_path, capsys):
+    source = _place(tmp_path)
+    _llvm_regions(tmp_path, source, [[4, 1, 5, 20, 1, 0, 0, 0]])
+    assert covered_lines(tmp_path, source, "swift") == {4, 5}
+    code = run(["--scan", "--use-existing-coverage", "--root", str(tmp_path), str(source)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "uncovered" not in _scan_line(captured.out, ":5 + -> -")
+
+
+def test_a_nested_zero_count_region_leaves_its_lines_uncovered(tmp_path, capsys):
+    source = _place(tmp_path)
+    _llvm_regions(
+        tmp_path,
+        source,
+        [
+            [4, 1, 7, 14, 3, 0, 0, 0],
+            [6, 1, 7, 14, 0, 0, 0, 0],
+        ],
+    )
+    assert covered_lines(tmp_path, source, "swift") == {4, 5}
+    code = run(["--scan", "--use-existing-coverage", "--root", str(tmp_path), str(source)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "uncovered" not in _scan_line(captured.out, ":5 + -> -")
+    assert "uncovered" in _scan_line(captured.out, ":7 0 -> 1")
+
+
+def test_a_line_outside_every_swift_region_is_uncovered(tmp_path, capsys):
+    source = _place(tmp_path)
+    _llvm_regions(tmp_path, source, [[4, 1, 5, 20, 1, 0, 0, 0]])
+    assert covered_lines(tmp_path, source, "swift") == {4, 5}
+    code = run(["--scan", "--use-existing-coverage", "--root", str(tmp_path), str(source)])
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "uncovered" in _scan_line(captured.out, ":2 true -> false")
 
 
 def test_go_profile_keyed_by_import_path_marks_hit_lines(tmp_path):
