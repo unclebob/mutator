@@ -4,7 +4,7 @@ Mutation testing for Clojure, Java, Go, TypeScript, Rust, Python, and Swift. One
 
 Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, and Python use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
 
-A mutant is killed when the tests fail or time out. It survives when the tests still pass. A site on a line the coverage report does not hit is uncovered and is not run. The score uml-viewer paints is killed / (killed + survived).
+A mutant is killed when the tests fail or time out. It survives when the tests still pass. A worker that cannot run the tests on the unmutated source is not a kill. That run stops the way a failed baseline does, and the snapshot is left as it was. A site on a line the coverage report does not hit is uncovered and is not run. The score uml-viewer paints is killed / (killed + survived).
 
 ## Run
 
@@ -31,15 +31,15 @@ The first run of a tree executes every covered mutant. Start with the file you a
 
 Once a snapshot exists, the next run is differential. It reruns survivors and every site in a function whose text changed. Killed mutants in an unchanged function stay killed. `--since-last-run` is that same selection. `--mutate-all` ignores it.
 
-Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail. Exit `3` when a mutant survives. A failed baseline does not rewrite the snapshot.
+Exit `0` when every executed mutant was killed. Exit `2` when the baseline tests fail, or the unmutated worker cannot run them. Exit `3` when a mutant survives. A failed baseline does not rewrite the snapshot.
 
 ## Workers
 
 Mutants of one file run at the same time. The default is one worker per core. `--max-workers` sets the cap. The run uses the smaller of that cap, the number of cores, and the number of selected sites. Files are still taken one at a time.
 
-Each worker is a directory under `target/mutation-workers`. The file being mutated is a private copy. A module that reaches that file through a relative import is copied too, so Node resolves the import to the private copy. The rest of the tree is linked. The original files stay as they are. The overlay is removed when that file's mutants finish.
+Each worker is a directory under `target/mutation-workers`. The file being mutated is a private copy. A module that reaches that file through a relative import is copied too, so Node resolves the import to the private copy. The rest of the tree is linked. An Xcode project, workspace, or asset catalog is copied: xcodebuild realpaths a project symlink, and actool will not follow a symlinked catalog. The original files stay as they are. The overlay is removed when that file's mutants finish.
 
-The baseline still runs once, in the real tree, before any worker starts. The mutant command then runs inside the worker, in the same directory it would have used in the real tree, so a relative path such as `src` or `./pkg` refers to the overlay. A copy left under `target/mutator-backup/` by an interrupted older run is restored before a non-scan run.
+The baseline still runs once, in the real tree, before any worker starts. One worker then runs that same command on the unmutated copy. If that fails, the failure is not a kill. The mutant command runs inside the worker, in the same directory it would have used in the real tree, so a relative path such as `src` or `./pkg` refers to the overlay. A copy left under `target/mutator-backup/` by an interrupted older run is restored before a non-scan run.
 
 ## Snapshot
 

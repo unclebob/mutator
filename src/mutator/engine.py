@@ -11,7 +11,7 @@ from mutator.metrics import load_history, source_key, write_results
 from mutator.model import FormResult, RunResult, Site
 from mutator.report import format_scan
 from mutator.runner import Command, CommandRunner, display_command, test_plan
-from mutator.workers import run_mutants
+from mutator.workers import WorkerBuildFailure, run_mutants
 
 
 def restore_backups(root: Path) -> list[Path]:
@@ -188,22 +188,42 @@ def _command_key(command: Command) -> tuple[str, ...]:
     return ("argv", *command)
 
 
+def _output_tail(output: str) -> str:
+    return "\n".join(output.splitlines()[-20:])
+
+
+def _with_tail(message: str, tail: str) -> str:
+    if tail:
+        return f"{message}\n{tail}"
+    return message
+
+
+def _stopped(file_key: str, command: Command, lead: str, tail: str) -> RunResult:
+    message = _with_tail(f"{lead}: {display_command(command)}", tail)
+    return RunResult(path=file_key, forms=[], written=[], baseline_failed=True, baseline_message=message)
+
+
 def _remember_baseline(baselines, cache_key, runner, command: Command, cwd: Path) -> None:
     if cache_key in baselines:
         return
     baseline = runner.run(command, cwd, None)
     if baseline.code != 0:
-        tail = "\n".join(baseline.output.splitlines()[-20:])
-        baselines[cache_key] = (False, baseline.seconds, tail)
+        baselines[cache_key] = (False, baseline.seconds, _output_tail(baseline.output))
         return
     baselines[cache_key] = (True, baseline.seconds, "")
 
 
 def _baseline_failure(file_key: str, command: Command, tail: str) -> RunResult:
-    message = f"Baseline failed for {file_key}: {display_command(command)}"
-    if tail:
-        message = f"{message}\n{tail}"
-    return RunResult(path=file_key, forms=[], written=[], baseline_failed=True, baseline_message=message)
+    return _stopped(file_key, command, f"Baseline failed for {file_key}", tail)
+
+
+def _worker_failure(file_key: str, command: Command, failure: WorkerBuildFailure) -> RunResult:
+    return _stopped(
+        file_key,
+        command,
+        f"Worker build failed for {file_key} before any mutation",
+        _output_tail(failure.output),
+    )
 
 
 def _apply_selected(
@@ -238,7 +258,7 @@ def _apply_selected(
     if not ok:
         return _baseline_failure(file_key, command, tail)
     timeout = max(2.0, seconds * timeout_factor)
-    run_mutants(
+    failure = run_mutants(
         root,
         path,
         original,
@@ -251,6 +271,8 @@ def _apply_selected(
         file_key,
         outcomes,
     )
+    if failure is not None:
+        return _worker_failure(file_key, command, failure)
     return None
 
 

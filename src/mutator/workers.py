@@ -1,10 +1,12 @@
 """Run mutants in symlink overlays, the way clj-mutate runs its workers.
 
 Each worker is a directory under target/mutation-workers. Project files are
-linked in. An Xcode project or workspace is copied instead, because xcodebuild
-realpaths a symlink and would compile the original tree. The file under test
-is a private copy, so workers can mutate it at the same time without touching
-the original tree. The overlay is removed when the file's mutants finish.
+linked in. An Xcode project, workspace, or asset catalog is copied instead.
+xcodebuild realpaths a project symlink and would compile the original tree.
+actool does not follow a symlinked catalog, so a mutant that still compiles
+is reported killed. The file under test is a private copy, so workers can
+mutate it at the same time without touching the original tree. The overlay
+is removed when the file's mutants finish.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
@@ -82,7 +85,7 @@ def worker_count(site_count: int, requested: int | None) -> int:
 
     processors = os.cpu_count() or 1
     limit = processors if requested is None else requested
-    return max(1, min(site_count, processors, limit))
+    return min(site_count, processors, limit)
 
 
 def new_run_dir(root: Path) -> Path:
@@ -143,10 +146,15 @@ def _copy_configs(worker: Path, root: Path, relative: str) -> None:
         (worker / name).write_bytes(source.read_bytes())
 
 
-def _xcode_bundle(path: Path) -> bool:
-    """An Xcode project or workspace. xcodebuild realpaths it before compiling."""
+def _copied_bundle(path: Path) -> bool:
+    """A directory the build realpaths or will not follow as a link.
 
-    return path.suffix in {".xcodeproj", ".xcworkspace"} and path.is_dir()
+    A file that merely ends in one of these suffixes stays a link. So does a
+    directory that only contains a catalog: opening the catalog follows that
+    parent link and sees the real tree.
+    """
+
+    return path.is_dir() and path.suffix in {".xcodeproj", ".xcworkspace", ".xcassets"}
 
 
 def _copy_bundle(source: Path, destination: Path) -> None:
@@ -174,7 +182,7 @@ def _link_children(worker_dir: Path, real_dir: Path, skip: set[str]) -> None:
         destination = worker_dir / child.name
         if destination.exists() or destination.is_symlink():
             continue
-        if _xcode_bundle(child):
+        if _copied_bundle(child):
             _copy_bundle(child, destination)
             continue
         symlink(destination, child)
@@ -295,7 +303,7 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
         if current.is_symlink():
             _expand_directory(current, real)
         elif not current.exists():
-            current.mkdir(parents=True)
+            current.mkdir()
     destination = worker / relative
     if destination.is_symlink():
         destination.unlink()
@@ -332,6 +340,13 @@ def create_workers(
             _copy_importer(worker, root, importer)
         created.append(worker)
     return created
+
+
+@dataclass(frozen=True)
+class WorkerBuildFailure:
+    """The unmutated worker could not run the tests. This is not a kill."""
+
+    output: str
 
 
 def mapped_cwd(worker: Path, root: Path, cwd: Path) -> Path:
@@ -455,6 +470,17 @@ def _run_all(
             future.result()
 
 
+def _probe_worker(
+    directory: Path, root: Path, runner, command: Command, cwd: Path
+) -> WorkerBuildFailure | None:
+    """Run the tests on the unmutated overlay. ``None`` means they passed."""
+
+    result = runner.run(command, mapped_cwd(directory, root, cwd), None)
+    if result.code == 0:
+        return None
+    return WorkerBuildFailure(result.output)
+
+
 def run_mutants(
     root: Path,
     source: Path,
@@ -467,29 +493,37 @@ def run_mutants(
     timeout: float,
     file_key: str,
     outcomes: dict[str, str],
-) -> None:
-    """Mutate ``sites`` in parallel overlays of ``root``. The source stays put."""
+) -> WorkerBuildFailure | None:
+    """Mutate ``sites`` in parallel overlays of ``root``. The source stays put.
+
+    The unmutated overlay runs once before any mutant. A failure there is
+    returned, and nothing is recorded as killed.
+    """
 
     if not sites:
-        return
+        return None
     base = new_run_dir(root)
+    failure: WorkerBuildFailure | None = None
     try:
         relative = source.resolve().relative_to(root.resolve()).as_posix()
         directories = create_workers(
             base, root, relative, original, worker_count(len(sites), max_workers)
         )
-        _run_all(
-            directories,
-            sites,
-            outcomes,
-            root,
-            relative,
-            original,
-            runner,
-            command,
-            cwd,
-            timeout,
-            file_key,
-        )
+        failure = _probe_worker(directories[0], root, runner, command, cwd)
+        if failure is None:
+            _run_all(
+                directories,
+                sites,
+                outcomes,
+                root,
+                relative,
+                original,
+                runner,
+                command,
+                cwd,
+                timeout,
+                file_key,
+            )
     finally:
         delete_tree(base)
+    return failure

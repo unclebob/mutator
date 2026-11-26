@@ -283,6 +283,50 @@ def test_a_worker_copies_an_xcode_bundle_and_links_a_file_with_that_suffix(tmp_p
     assert linked.read_text(encoding="utf-8") == "not a bundle\n"
 
 
+def test_a_worker_copies_an_asset_catalog_and_keeps_safe_links(tmp_path):
+    from mutator.workers import create_workers, new_run_dir
+
+    root = tmp_path / "ios"
+    source = _write(root / "DungeonDoor" / "Core" / "AppConfig.swift", "func body() -> Int { 1 }\n")
+    _write(root / "DungeonDoor.xcodeproj" / "project.pbxproj", "path = DungeonDoor/Core/AppConfig.swift;\n")
+    shared = tmp_path / "shared-icon"
+    _write(shared / "AppIcon.png", "png-bytes")
+    catalog = root / "DungeonDoor" / "Assets.xcassets"
+    _write(catalog / "AccentColor.colorset" / "Contents.json", '{"color":"accent"}\n')
+    (catalog / "AppIcon.appiconset").symlink_to(shared)
+    _write(root / "DungeonDoor" / "Core" / "Other.swift", "func other() -> Int { 2 }\n")
+    _write(root / "DungeonDoor" / "Notes.xcassets", "not a catalog\n")
+    _write(root / "DungeonDoor" / "Preview" / "readme.txt", "preview\n")
+    _write(root / "Docs" / "readme.txt", "notes\n")
+    worker = create_workers(
+        new_run_dir(root),
+        root,
+        "DungeonDoor/Core/AppConfig.swift",
+        source.read_bytes(),
+        1,
+    )[0]
+    copied = worker / "DungeonDoor" / "Assets.xcassets"
+    icon = copied / "AppIcon.appiconset" / "AppIcon.png"
+    accent = copied / "AccentColor.colorset" / "Contents.json"
+    assert copied.is_dir() and not copied.is_symlink()
+    assert (copied / "AppIcon.appiconset").is_dir()
+    assert not (copied / "AppIcon.appiconset").is_symlink()
+    assert icon.is_file() and not icon.is_symlink()
+    assert icon.read_text(encoding="utf-8") == "png-bytes"
+    assert accent.is_file() and not accent.is_symlink()
+    assert accent.read_text(encoding="utf-8") == '{"color":"accent"}\n'
+    core = worker / "DungeonDoor" / "Core"
+    other = core / "Other.swift"
+    assert core.is_dir() and not core.is_symlink()
+    assert other.is_symlink()
+    assert other.read_text(encoding="utf-8").startswith("func other")
+    assert (worker / "DungeonDoor" / "Notes.xcassets").is_symlink()
+    assert (worker / "DungeonDoor" / "Preview").is_symlink()
+    assert (worker / "Docs").is_symlink()
+    assert (catalog / "AppIcon.appiconset").is_symlink()
+    assert (shared / "AppIcon.png").read_text(encoding="utf-8") == "png-bytes"
+
+
 def test_a_worker_does_not_share_swift_build_directories(tmp_path):
     from mutator.workers import create_workers, new_run_dir
 
@@ -426,6 +470,42 @@ if ">=" in body or "!(" in body:
 raise SystemExit(0)
 """
 
+# actool rejects a symlinked catalog, then the build dies even when the mutant
+# still compiles. A real catalog with AppIcon and AccentColor is accepted.
+_CATALOG_BUILD = """#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+cwd = Path.cwd()
+log = Path(os.environ["XCODE_LOG"])
+found = []
+for dirpath, dirnames, _filenames in os.walk(cwd):
+    for name in list(dirnames):
+        if name.endswith(".xcassets"):
+            found.append(Path(dirpath) / name)
+            dirnames.remove(name)
+broken = []
+for catalog in found:
+    icon = catalog / "AppIcon.appiconset" / "AppIcon.png"
+    accent = catalog / "AccentColor.colorset" / "Contents.json"
+    if catalog.is_symlink() or not icon.is_file() or not accent.is_file():
+        broken.append(str(catalog))
+with log.open("a", encoding="utf-8") as handle:
+    handle.write(str(cwd) + "\\n")
+    handle.write("broken " + str(len(broken)) + "\\n")
+    handle.write("---\\n")
+if not found or broken:
+    catalog = broken[0] if broken else str(cwd)
+    sys.stderr.write(
+        catalog
+        + ': error: None of the input catalogs contained a matching '
+        + 'stickers icon set, app icon set, or icon stack named "AppIcon".\\n'
+    )
+    raise SystemExit(65)
+raise SystemExit(0)
+"""
+
 
 def _labels(output: str, description: str) -> list[str]:
     return [line.split()[0] for line in output.splitlines() if description in line]
@@ -529,6 +609,108 @@ def test_a_failing_xcodebuild_baseline_records_no_kills(tmp_path, monkeypatch, c
     assert code == 2
     assert "Baseline failed" in captured.err
     assert "xcodebuild" in captured.err
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+    assert not (root / ".metrics" / "mutate").exists()
+
+
+def test_a_compiling_mutant_survives_when_the_worker_catalog_is_real(tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "bin"
+    log = tmp_path / "xcode.log"
+    bin_dir.mkdir()
+    tool = bin_dir / "xcodebuild"
+    tool.write_text(_CATALOG_BUILD, encoding="utf-8")
+    tool.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("XCODE_LOG", str(log))
+    root = tmp_path / "ios"
+    source = _write(root / "DungeonDoor" / "Core" / "AppConfig.swift", _IOS_BODY)
+    project = root / "DungeonDoor.xcodeproj"
+    _write(project / "project.pbxproj", "path = DungeonDoor/Core/AppConfig.swift;\n")
+    _write(project / "xcshareddata" / "xcschemes" / "DungeonDoor.xcscheme", "<Scheme/>\n")
+    catalog = root / "DungeonDoor" / "Assets.xcassets"
+    _write(catalog / "AppIcon.appiconset" / "AppIcon.png", "png-bytes")
+    _write(catalog / "AccentColor.colorset" / "Contents.json", '{"color":"accent"}\n')
+    code = run(
+        [
+            "--no-coverage",
+            "--root",
+            str(root),
+            "--max-workers",
+            "1",
+            "--xcode-destination",
+            "platform=iOS Simulator,name=iPhone 17",
+        ]
+    )
+    captured = capsys.readouterr()
+    text = log.read_text(encoding="utf-8")
+    assert code == 3
+    assert "SURVIVED" in captured.out
+    assert "KILLED" not in captured.out
+    assert "mutation-workers" in text
+    assert "broken 0" in text
+    assert "broken 1" not in text
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+    assert catalog.is_dir() and not catalog.is_symlink()
+
+
+def _worker_only_failure(bin_dir: Path, body: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    tool = bin_dir / "xcodebuild"
+    tool.write_text(body, encoding="utf-8")
+    tool.chmod(0o755)
+
+
+def test_an_unmutated_worker_build_failure_is_not_a_kill(tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "bin"
+    _worker_only_failure(
+        bin_dir,
+        "#!/bin/sh\n"
+        'case "$PWD" in\n'
+        "*mutation-workers*)\n"
+        "  echo WORKER-BOOM\n"
+        "  exit 65\n"
+        "  ;;\n"
+        "esac\n"
+        "exit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    root = tmp_path / "ios"
+    source = _ios_source(root, "App.xcodeproj")
+    code = run(["--no-coverage", "--root", str(root), "--max-workers", "1"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Worker build failed for App/ContentView.swift before any mutation:" in captured.err
+    assert "WORKER-BOOM" in captured.err
+    assert "KILLED" not in captured.out
+    assert "SURVIVED" not in captured.out
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+    assert not (root / ".metrics" / "mutate").exists()
+
+
+def test_an_unmutated_worker_build_failure_without_output_is_not_a_kill(
+    tmp_path, monkeypatch, capsys
+):
+    bin_dir = tmp_path / "bin"
+    _worker_only_failure(
+        bin_dir,
+        "#!/bin/sh\n"
+        'case "$PWD" in\n'
+        "*mutation-workers*) exit 65 ;;\n"
+        "esac\n"
+        "exit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    root = tmp_path / "ios"
+    source = _ios_source(root, "App.xcodeproj")
+    code = run(["--no-coverage", "--root", str(root), "--max-workers", "1"])
+    captured = capsys.readouterr()
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert code == 2
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        "Worker build failed for App/ContentView.swift before any mutation: xcodebuild test "
+    )
+    assert "KILLED" not in captured.out
     assert source.read_text(encoding="utf-8") == _IOS_BODY
     assert not (root / ".metrics" / "mutate").exists()
 
