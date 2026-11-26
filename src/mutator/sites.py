@@ -124,7 +124,7 @@ _CLOJURE_HEAD = {
 
 class RawSite:
     def __init__(
-        self, line: int, start: int, end: int, original: str, mutant: str, category: str, anchor_line: int = 0
+        self, line: int, start: int, end: int, original: str, mutant: str, category: str, anchor_line: int
     ):
         self.line = line
         # The line its statement starts on. LCOV marks only that line of a multi-line statement.
@@ -248,10 +248,10 @@ def _is_head(node) -> bool:
     parent = node.parent
     if parent is None or parent.type != "list_lit":
         return False
+    # The symbol is one of these children, so this loop returns.
     for child in parent.children:
         if child.type == "sym_lit":
             return child.id == node.id
-    return False
 
 
 def _clojure_skipped(node, data: bytes) -> bool:
@@ -268,7 +268,7 @@ def _clojure_skipped(node, data: bytes) -> bool:
 
 
 def _clojure_text(node, data: bytes) -> str:
-    if node.child_count == 0 or node.type in {"sym_lit", "bool_lit", "num_lit"}:
+    if node.type in {"sym_lit", "bool_lit", "num_lit"}:
         return _text(data, node)
     return ""
 
