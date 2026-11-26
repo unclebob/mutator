@@ -721,8 +721,10 @@ def test_selection_coverage_and_timeouts_keep_their_boundaries(tmp_path, capsys,
         mutation_warning=50,
         baselines={},
     )
+    # Project baseline, then the unmutated worker, then a mutant at 10x.
     assert clock.timeouts[0] is None
-    assert clock.timeouts[1] == 300
+    assert clock.timeouts[1] is None
+    assert clock.timeouts[2] == 300
 
     class Red:
         verbose = False

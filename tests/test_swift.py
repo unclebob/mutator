@@ -294,6 +294,7 @@ def test_a_worker_copies_an_asset_catalog_and_keeps_safe_links(tmp_path):
     catalog = root / "DungeonDoor" / "Assets.xcassets"
     _write(catalog / "AccentColor.colorset" / "Contents.json", '{"color":"accent"}\n')
     (catalog / "AppIcon.appiconset").symlink_to(shared)
+    _write(root / "DungeonDoor" / "Core" / "Other.swift", "func other() -> Int { 2 }\n")
     _write(root / "DungeonDoor" / "Notes.xcassets", "not a catalog\n")
     _write(root / "DungeonDoor" / "Preview" / "readme.txt", "preview\n")
     _write(root / "Docs" / "readme.txt", "notes\n")
@@ -314,6 +315,11 @@ def test_a_worker_copies_an_asset_catalog_and_keeps_safe_links(tmp_path):
     assert icon.read_text(encoding="utf-8") == "png-bytes"
     assert accent.is_file() and not accent.is_symlink()
     assert accent.read_text(encoding="utf-8") == '{"color":"accent"}\n'
+    core = worker / "DungeonDoor" / "Core"
+    other = core / "Other.swift"
+    assert core.is_dir() and not core.is_symlink()
+    assert other.is_symlink()
+    assert other.read_text(encoding="utf-8").startswith("func other")
     assert (worker / "DungeonDoor" / "Notes.xcassets").is_symlink()
     assert (worker / "DungeonDoor" / "Preview").is_symlink()
     assert (worker / "Docs").is_symlink()
@@ -645,6 +651,68 @@ def test_a_compiling_mutant_survives_when_the_worker_catalog_is_real(tmp_path, m
     assert "broken 1" not in text
     assert source.read_text(encoding="utf-8") == _IOS_BODY
     assert catalog.is_dir() and not catalog.is_symlink()
+
+
+def _worker_only_failure(bin_dir: Path, body: str) -> None:
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    tool = bin_dir / "xcodebuild"
+    tool.write_text(body, encoding="utf-8")
+    tool.chmod(0o755)
+
+
+def test_an_unmutated_worker_build_failure_is_not_a_kill(tmp_path, monkeypatch, capsys):
+    bin_dir = tmp_path / "bin"
+    _worker_only_failure(
+        bin_dir,
+        "#!/bin/sh\n"
+        'case "$PWD" in\n'
+        "*mutation-workers*)\n"
+        "  echo WORKER-BOOM\n"
+        "  exit 65\n"
+        "  ;;\n"
+        "esac\n"
+        "exit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    root = tmp_path / "ios"
+    source = _ios_source(root, "App.xcodeproj")
+    code = run(["--no-coverage", "--root", str(root), "--max-workers", "1"])
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "Worker build failed for App/ContentView.swift before any mutation:" in captured.err
+    assert "WORKER-BOOM" in captured.err
+    assert "KILLED" not in captured.out
+    assert "SURVIVED" not in captured.out
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+    assert not (root / ".metrics" / "mutate").exists()
+
+
+def test_an_unmutated_worker_build_failure_without_output_is_not_a_kill(
+    tmp_path, monkeypatch, capsys
+):
+    bin_dir = tmp_path / "bin"
+    _worker_only_failure(
+        bin_dir,
+        "#!/bin/sh\n"
+        'case "$PWD" in\n'
+        "*mutation-workers*) exit 65 ;;\n"
+        "esac\n"
+        "exit 0\n",
+    )
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    root = tmp_path / "ios"
+    source = _ios_source(root, "App.xcodeproj")
+    code = run(["--no-coverage", "--root", str(root), "--max-workers", "1"])
+    captured = capsys.readouterr()
+    lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert code == 2
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        "Worker build failed for App/ContentView.swift before any mutation: xcodebuild test "
+    )
+    assert "KILLED" not in captured.out
+    assert source.read_text(encoding="utf-8") == _IOS_BODY
+    assert not (root / ".metrics" / "mutate").exists()
 
 
 def test_scan_marks_a_swift_line_uncovered_when_llvm_cov_did_not_hit_it(tmp_path, capsys):

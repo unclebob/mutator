@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Lock
@@ -84,7 +85,7 @@ def worker_count(site_count: int, requested: int | None) -> int:
 
     processors = os.cpu_count() or 1
     limit = processors if requested is None else requested
-    return max(1, min(site_count, processors, limit))
+    return min(site_count, processors, limit)
 
 
 def new_run_dir(root: Path) -> Path:
@@ -302,7 +303,7 @@ def _copy_importer(worker: Path, root: Path, relative: str) -> None:
         if current.is_symlink():
             _expand_directory(current, real)
         elif not current.exists():
-            current.mkdir(parents=True)
+            current.mkdir()
     destination = worker / relative
     if destination.is_symlink():
         destination.unlink()
@@ -339,6 +340,13 @@ def create_workers(
             _copy_importer(worker, root, importer)
         created.append(worker)
     return created
+
+
+@dataclass(frozen=True)
+class WorkerBuildFailure:
+    """The unmutated worker could not run the tests. This is not a kill."""
+
+    output: str
 
 
 def mapped_cwd(worker: Path, root: Path, cwd: Path) -> Path:
@@ -462,6 +470,17 @@ def _run_all(
             future.result()
 
 
+def _probe_worker(
+    directory: Path, root: Path, runner, command: Command, cwd: Path
+) -> WorkerBuildFailure | None:
+    """Run the tests on the unmutated overlay. ``None`` means they passed."""
+
+    result = runner.run(command, mapped_cwd(directory, root, cwd), None)
+    if result.code == 0:
+        return None
+    return WorkerBuildFailure(result.output)
+
+
 def run_mutants(
     root: Path,
     source: Path,
@@ -474,29 +493,37 @@ def run_mutants(
     timeout: float,
     file_key: str,
     outcomes: dict[str, str],
-) -> None:
-    """Mutate ``sites`` in parallel overlays of ``root``. The source stays put."""
+) -> WorkerBuildFailure | None:
+    """Mutate ``sites`` in parallel overlays of ``root``. The source stays put.
+
+    The unmutated overlay runs once before any mutant. A failure there is
+    returned, and nothing is recorded as killed.
+    """
 
     if not sites:
-        return
+        return None
     base = new_run_dir(root)
+    failure: WorkerBuildFailure | None = None
     try:
         relative = source.resolve().relative_to(root.resolve()).as_posix()
         directories = create_workers(
             base, root, relative, original, worker_count(len(sites), max_workers)
         )
-        _run_all(
-            directories,
-            sites,
-            outcomes,
-            root,
-            relative,
-            original,
-            runner,
-            command,
-            cwd,
-            timeout,
-            file_key,
-        )
+        failure = _probe_worker(directories[0], root, runner, command, cwd)
+        if failure is None:
+            _run_all(
+                directories,
+                sites,
+                outcomes,
+                root,
+                relative,
+                original,
+                runner,
+                command,
+                cwd,
+                timeout,
+                file_key,
+            )
     finally:
         delete_tree(base)
+    return failure

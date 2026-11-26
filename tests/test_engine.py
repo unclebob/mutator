@@ -2,12 +2,14 @@ import os
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
-from mutator.engine import mutate_file, restore_backups
-from mutator.edn import loads
-from mutator.metrics import snapshot_path
+from mutator.engine import _backup, _drop_bytecode, mutate_file, restore_backups, scan_file
 from mutator.runner import CommandResult
-from mutator.workers import create_workers, delete_tree, new_run_dir, worker_count
+from mutator.edn import dumps, loads
+from mutator.functions import form_digests
+from mutator.metrics import snapshot_path
+from mutator.workers import create_workers, delete_tree, importers_of, new_run_dir, worker_count
 
 
 class FakeRunner:
@@ -85,8 +87,10 @@ def test_mutants_are_killed_or_kept_and_the_snapshot_is_differential(tmp_path):
     )
     assert second.forms[0].killed == 1
     assert second.forms[0].survived == 3
-    # Baseline plus the three survivors. The killed mutant stays in the snapshot.
-    assert runner.calls - first_calls == 4
+    # Baseline, the unmutated worker, and the three survivors.
+    # The killed mutant stays in the snapshot and is not run again.
+    assert first_calls == 6
+    assert runner.calls - first_calls == 5
 
 
 def test_uncovered_sites_are_not_executed(tmp_path):
@@ -300,3 +304,138 @@ def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):
     assert restored == [source]
     assert source.read_text(encoding="utf-8") == "original\n"
     assert not backup.exists()
+
+
+def test_worker_count_is_one_when_the_processor_count_is_unknown(monkeypatch):
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert worker_count(4, None) == 1
+    assert worker_count(4, 3) == 1
+
+
+def test_workers_can_be_created_twice_and_under_a_missing_directory(tmp_path):
+    source = tmp_path / "src" / "demo.py"
+    source.parent.mkdir()
+    source.write_text("def place(x):\n    return x > 0\n", encoding="utf-8")
+    original = source.read_bytes()
+    base = tmp_path / "fresh" / "run"
+    first = create_workers(base, tmp_path, "src/demo.py", original, 1)
+    second = create_workers(base, tmp_path, "src/demo.py", original, 1)
+    assert first[0] == second[0]
+    assert (second[0] / "src" / "demo.py").read_bytes() == original
+    assert source.read_bytes() == original
+
+
+def test_a_module_is_not_listed_as_its_own_importer(tmp_path):
+    source = tmp_path / "src" / "find.mjs"
+    source.parent.mkdir()
+    source.write_text(
+        'import { value } from "./find.mjs";\nexport const value = 1\n',
+        encoding="utf-8",
+    )
+    assert importers_of(tmp_path, "src/find.mjs") == set()
+
+
+def test_importers_keep_queries_hashes_bare_specifiers_and_nesting(tmp_path):
+    source = tmp_path / "src" / "find.mjs"
+    source.parent.mkdir()
+    source.write_text('export const value = "real"\n', encoding="utf-8")
+    plain = tmp_path / "src" / "plain.mjs"
+    plain.write_text('import { value } from "./find";\n', encoding="utf-8")
+    typed = tmp_path / "src" / "typed.mjs"
+    typed.write_text('import { value } from "./find.js";\n', encoding="utf-8")
+    query = tmp_path / "src" / "query.mjs"
+    query.write_text('import { value } from "./find.mjs?raw";\n', encoding="utf-8")
+    hashed = tmp_path / "src" / "hashed.mjs"
+    hashed.write_text('import { value } from "./find.mjs#part";\n', encoding="utf-8")
+    nested = tmp_path / "src" / "nested" / "use.mjs"
+    nested.parent.mkdir()
+    nested.write_text('import { value } from "../find.mjs";\n', encoding="utf-8")
+    escape = tmp_path / "src" / "escape.mjs"
+    escape.write_text('import x from "../../outside.js";\n', encoding="utf-8")
+    git_hook = tmp_path / ".git" / "hook.mjs"
+    git_hook.parent.mkdir()
+    git_hook.write_text('import { value } from "../src/find.mjs";\n', encoding="utf-8")
+    original = source.read_bytes()
+    base = new_run_dir(tmp_path)
+    try:
+        worker = create_workers(base, tmp_path, "src/find.mjs", original, 1)[0]
+        nested_dir = worker / "src" / "nested"
+        assert nested_dir.is_dir() and not nested_dir.is_symlink()
+        for relative in (
+            "src/plain.mjs",
+            "src/typed.mjs",
+            "src/query.mjs",
+            "src/hashed.mjs",
+            "src/nested/use.mjs",
+        ):
+            copied = worker / relative
+            assert copied.is_file()
+            assert not copied.is_symlink()
+        assert not (worker / ".git").exists()
+        assert escape.read_text(encoding="utf-8").startswith("import")
+    finally:
+        delete_tree(base)
+    assert source.read_bytes() == original
+    assert nested.read_text(encoding="utf-8").startswith("import")
+
+
+def test_the_first_backup_creates_a_nested_directory(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_bytes(b"original")
+    saved = _backup(tmp_path, path, b"original")
+    assert saved == tmp_path / "target" / "mutator-backup" / "src" / "demo.py"
+    assert saved.read_bytes() == b"original"
+    assert path.read_bytes() == b"original"
+
+
+def test_dropping_bytecode_ignores_a_pyc_that_vanishes(tmp_path, monkeypatch):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("x", encoding="utf-8")
+    missing = path.parent / "__pycache__" / "demo.cpython-314.pyc"
+    missing.parent.mkdir()
+
+    def glob(self, pattern):
+        if self == missing.parent and pattern.startswith("demo."):
+            return [missing]
+        return []
+
+    monkeypatch.setattr(Path, "glob", glob)
+    _drop_bytecode(path)
+    assert not missing.exists()
+
+
+def test_a_scan_without_coverage_does_not_call_a_site_uncovered(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text("def place(x):\n    return x > 0\n", encoding="utf-8")
+    text = scan_file(path, tmp_path, covered_lines=None, ignore_coverage=False, lines=None)
+    assert "uncovered" not in text
+    assert "> -> >=" in text
+
+
+def test_a_scan_marks_a_function_whose_recorded_text_changed(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    source = "def place(x):\n    return x > 0\n"
+    path.write_text(source, encoding="utf-8")
+    digests = form_digests(source, path, tmp_path)
+    (namespace, form_id), _digest = next(iter(digests.items()))
+    snapshot = snapshot_path(tmp_path, namespace)
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text(
+        dumps(
+            {
+                "namespace": namespace,
+                "source": "src/demo.py",
+                "forms": [{"id": form_id, "hash": "stale", "file": "src/demo.py"}],
+                "outcomes": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    text = scan_file(path, tmp_path, covered_lines=None, ignore_coverage=True, lines=None)
+    assert "whose text changed" in text
+    assert any(line.startswith("* ") for line in text.splitlines())
