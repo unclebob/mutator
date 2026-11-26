@@ -122,3 +122,11 @@ def test_a_failed_coverage_command_does_not_read_the_report(tmp_path, capsys):
     assert "will not be read" in captured.err
     assert "Baseline failed" not in captured.err
     assert path.read_text(encoding="utf-8").startswith("def place")
+
+
+def test_memory_factor_takes_a_finite_number_zero_or_more():
+    assert parse_args(["src/demo.py"]).memory_factor == 10
+    assert parse_args(["--memory-factor", "2.5", "src/demo.py"]).memory_factor == 2.5
+    assert parse_args(["--memory-factor", "0", "src/demo.py"]).memory_factor == 0
+    for bad in ("nan", "inf", "x", "-1"):
+        assert parse_args(["--memory-factor", bad, "src/demo.py"]).exit_code == 1

@@ -13,6 +13,9 @@ from mutator.report import format_scan
 from mutator.runner import Command, CommandRunner, display_command, test_plan
 from mutator.workers import run_mutants
 
+# A mutant may always use this much memory, however little the baseline needed.
+MEMORY_FLOOR = 1 << 30
+
 
 def restore_backups(root: Path) -> list[Path]:
     """Put back sources left mutated by a killed run."""
@@ -194,9 +197,18 @@ def _remember_baseline(baselines, cache_key, runner, command: Command, cwd: Path
     baseline = runner.run(command, cwd, None)
     if baseline.code != 0:
         tail = "\n".join(baseline.output.splitlines()[-20:])
-        baselines[cache_key] = (False, baseline.seconds, tail)
+        baselines[cache_key] = (False, baseline.seconds, tail, baseline.peak_bytes)
         return
-    baselines[cache_key] = (True, baseline.seconds, "")
+    baselines[cache_key] = (True, baseline.seconds, "", baseline.peak_bytes)
+
+
+def memory_limit(peak: int | None, factor: float) -> int | None:
+    """Bytes a mutant's process group may hold: `factor` times the baseline peak, at least
+    MEMORY_FLOOR. None, no limit, when the factor is 0 or the peak could not be read."""
+
+    if not factor or peak is None:
+        return None
+    return max(MEMORY_FLOOR, int(peak * factor))
 
 
 def _baseline_failure(file_key: str, command: Command, tail: str) -> RunResult:
@@ -215,6 +227,7 @@ def _apply_selected(
     language,
     test_command,
     timeout_factor,
+    memory_factor,
     file_key,
     baselines,
     outcomes,
@@ -234,7 +247,7 @@ def _apply_selected(
     )
     cache_key = (_command_key(command), str(cwd))
     _remember_baseline(baselines, cache_key, runner, command, cwd)
-    ok, seconds, tail = baselines[cache_key]
+    ok, seconds, tail, peak = baselines[cache_key]
     if not ok:
         return _baseline_failure(file_key, command, tail)
     timeout = max(2.0, seconds * timeout_factor)
@@ -250,6 +263,7 @@ def _apply_selected(
         timeout,
         file_key,
         outcomes,
+        memory_limit=memory_limit(peak, memory_factor),
     )
     return None
 
@@ -281,10 +295,11 @@ def mutate_file(
     test_command: str | None,
     timeout_factor: float,
     mutation_warning: int,
-    baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]],
+    baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str, int | None]],
     max_workers: int | None = None,
     xcode_scheme: str | None = None,
     xcode_destination: str | None = None,
+    memory_factor: float = 10.0,
 ) -> RunResult:
     """Mutate one file and write its namespaces into `.metrics/mutate`."""
 
@@ -316,6 +331,7 @@ def mutate_file(
         language,
         test_command,
         timeout_factor,
+        memory_factor,
         file_key,
         baselines,
         outcomes,

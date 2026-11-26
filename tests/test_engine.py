@@ -3,7 +3,7 @@ import shutil
 import subprocess
 import threading
 
-from mutator.engine import mutate_file, restore_backups
+from mutator.engine import MEMORY_FLOOR, memory_limit, mutate_file, restore_backups
 from mutator.edn import loads
 from mutator.metrics import snapshot_path
 from mutator.runner import CommandResult
@@ -300,3 +300,69 @@ def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):
     assert restored == [source]
     assert source.read_text(encoding="utf-8") == "original\n"
     assert not backup.exists()
+
+
+def test_the_memory_limit_is_a_multiple_of_the_baseline_peak():
+    assert memory_limit(None, 10) is None
+    assert memory_limit(5 << 30, 0) is None
+    assert memory_limit(1 << 20, 10) == MEMORY_FLOOR
+    assert memory_limit(1 << 30, 3) == 3 << 30
+
+
+class PeakRunner:
+    """The baseline peaks at 300 MiB; every mutant reports `mutant`."""
+
+    verbose = False
+
+    def __init__(self, mutant):
+        self.mutant = mutant
+        self.limits = []
+        self._lock = threading.Lock()
+
+    def run(self, command, cwd, timeout, memory_limit=None):
+        if timeout is None:
+            return CommandResult(code=0, timed_out=False, seconds=0.01, output="", peak_bytes=300 << 20)
+        with self._lock:
+            self.limits.append(memory_limit)
+        return self.mutant
+
+
+def _mutate(tmp_path, runner, **options):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+    return mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=True,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        **options,
+    )
+
+
+def test_mutants_get_the_memory_limit_from_the_baseline_peak(tmp_path):
+    runner = PeakRunner(CommandResult(code=1, timed_out=False, seconds=0.01, output=""))
+    _mutate(tmp_path, runner, memory_factor=5)
+    assert runner.limits
+    assert set(runner.limits) == {1500 << 20}
+
+
+def test_memory_factor_zero_runs_mutants_without_a_limit(tmp_path):
+    runner = PeakRunner(CommandResult(code=1, timed_out=False, seconds=0.01, output=""))
+    _mutate(tmp_path, runner, memory_factor=0)
+    assert set(runner.limits) == {None}
+
+
+def test_a_mutant_over_the_memory_limit_counts_as_killed_and_says_why(tmp_path, capsys):
+    over = CommandResult(code=137, timed_out=False, seconds=0.01, output="", peak_bytes=2 << 30, out_of_memory=True)
+    result = _mutate(tmp_path, PeakRunner(over), memory_factor=5, max_workers=1)
+    assert "memory 2.0 GiB over the 1.5 GiB limit" in capsys.readouterr().err
+    assert sum(form.killed for form in result.forms) > 0
+    assert sum(form.survived for form in result.forms) == 0
