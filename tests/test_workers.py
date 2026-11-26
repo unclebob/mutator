@@ -3,7 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from mutator.workers import delete_tree
+from mutator.model import Site
+from mutator.runner import CommandResult
+from mutator.workers import _execute, delete_tree
 
 
 def test_delete_tree_retries_when_a_directory_gains_a_file(tmp_path, monkeypatch):
@@ -88,3 +90,50 @@ def test_delete_tree_reraises_after_the_attempts_are_exhausted(tmp_path, monkeyp
     assert caught.value.errno == errno.ENOTEMPTY
     assert sleeps == [0.25, 0.5]
     assert tree.exists()
+
+
+def test_execute_preserves_crlf_line_endings(tmp_path):
+    root = tmp_path / "root"
+    worker = tmp_path / "worker"
+    (root / "src").mkdir(parents=True)
+    (worker / "src").mkdir(parents=True)
+    original = b"def f():\r\n    return 1 + 2\r\n"
+    worker_file = worker / "src" / "demo.py"
+    worker_file.write_bytes(original)
+    offset = original.index(b"+")
+    site = Site(
+        file="src/demo.py",
+        namespace="demo",
+        form_id="defn/f",
+        name="f",
+        line=2,
+        start=offset,
+        end=offset + 1,
+        original="+",
+        mutant="-",
+        category="arithmetic",
+        mutation_id="m1",
+    )
+    observed: list[bytes] = []
+
+    class FakeRunner:
+        def run(self, _command, _cwd, _timeout):
+            observed.append(worker_file.read_bytes())
+            return CommandResult(code=1, timed_out=False, seconds=0.01, output="")
+
+    status = _execute(
+        worker,
+        site,
+        root,
+        "src/demo.py",
+        original,
+        FakeRunner(),
+        ["pytest"],
+        root,
+        5.0,
+        "src/demo.py",
+    )
+    assert status == "killed"
+    assert observed == [b"def f():\r\n    return 1 - 2\r\n"]
+    assert b"\r\r\n" not in observed[0]
+    assert worker_file.read_bytes() == original

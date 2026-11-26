@@ -363,7 +363,7 @@ def _execute(
         return "survived"
     destination = directory / relative
     mutated = apply_site(original.decode("utf-8"), site.start, site.end, site.mutant)
-    destination.write_text(mutated, encoding="utf-8")
+    destination.write_bytes(mutated.encode("utf-8"))
     try:
         result = runner.run(command, mapped_cwd(directory, root, cwd), timeout)
     finally:
