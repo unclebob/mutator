@@ -1,6 +1,6 @@
 from mutator.edn import dumps, loads
-from mutator.metrics import load_history, snapshot_path, write_results
-from mutator.model import FormResult
+from mutator.metrics import HistoryIndex, load_all_history, load_history, snapshot_path, write_results
+from mutator.model import FormResult, History
 
 
 def _form(namespace, name, file_name, digest, killed=1, private=False):
@@ -130,3 +130,53 @@ def test_dropping_a_file_removes_its_namespace_when_nothing_else_remains(tmp_pat
     write_results(tmp_path, "a.go", [_form("demo", "Run", "a.go", "hash-a")], {})
     write_results(tmp_path, "a.go", [], {})
     assert not snapshot_path(tmp_path, "demo").exists()
+
+
+def test_load_all_history_matches_load_history_across_files_and_namespaces(tmp_path, monkeypatch):
+    import mutator.metrics as metrics_module
+
+    outcome_a = '["a.go","demo","defn/Run",2,3,"+","-"]'
+    outcome_b = '["b.go","demo","defn/Stop",2,3,">","<"]'
+    outcome_c = '["pkg/c.py","pkg.c","defn/go",2,3,"1","0"]'
+    write_results(tmp_path, "a.go", [_form("demo", "Run", "a.go", "hash-a")], {outcome_a: "killed"})
+    write_results(tmp_path, "b.go", [_form("demo", "Stop", "b.go", "hash-b")], {outcome_b: "survived"})
+    write_results(tmp_path, "pkg/c.py", [_form("pkg.c", "go", "pkg/c.py", "hash-c")], {outcome_c: "killed"})
+
+    mutate_dir = tmp_path / ".metrics" / "mutate"
+    (mutate_dir / "broken.edn").write_text("{", encoding="utf-8")
+    (mutate_dir / "scalar.edn").write_text("123", encoding="utf-8")
+    (mutate_dir / "no_ns.edn").write_text(dumps({"forms": [], "outcomes": {}}), encoding="utf-8")
+    (mutate_dir / "00_older.edn").write_text(
+        dumps(
+            {
+                "version": 1,
+                "namespace": "demo",
+                "source": "a.go",
+                "forms": [{"id": "defn/Run", "hash": "stale-hash"}],
+                "outcomes": {"not-json": ":killed", outcome_a: ":survived"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    orig_edn_files = metrics_module._edn_files
+    edn_calls = []
+
+    def counting_edn_files(root):
+        edn_calls.append(root)
+        return orig_edn_files(root)
+
+    monkeypatch.setattr(metrics_module, "_edn_files", counting_edn_files)
+    index = load_all_history(tmp_path)
+    assert edn_calls == [tmp_path]
+
+    for key in ("a.go", "b.go", "pkg/c.py", "missing.py"):
+        assert index.for_file(key) == load_history(tmp_path, key)
+
+    copy_a = index.for_file("a.go")
+    copy_a.forms.clear()
+    copy_a.outcomes.clear()
+    assert ("demo", "defn/Run") in index.for_file("a.go").forms
+    assert outcome_a in index.for_file("a.go").outcomes
+    assert HistoryIndex().for_file("missing.py") == History()

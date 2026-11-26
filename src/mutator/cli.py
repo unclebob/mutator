@@ -9,8 +9,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mutator.crapper_link import ensure_crapper
-from mutator.coverage import covered_lines
+from mutator.coverage import CoverageCache, covered_lines
 from mutator.engine import mutate_file, restore_backups, scan_file
+from mutator.metrics import load_all_history, source_key
 from mutator.report import format_results, format_site_log
 from mutator.runner import CommandRunner
 from mutator.sources import is_mutable_source, is_skipped_test, iter_source_files
@@ -480,14 +481,19 @@ def _prepare_coverage(options: Options, root: Path, files: list[Path]) -> int:
     return 0
 
 
-def _coverage_for(options: Options, root: Path, path: Path) -> set[int] | None:
+def _coverage_for(
+    options: Options,
+    root: Path,
+    path: Path,
+    cache: CoverageCache | None = None,
+) -> set[int] | None:
     if options.no_coverage:
         return None
     crapper = ensure_crapper()
     language = crapper.discover.language_of(path)
     if language is None:
         return None
-    return covered_lines(root, path, language)
+    return covered_lines(root, path, language, cache=cache)
 
 
 def _print_help(options: Options) -> int:
@@ -511,14 +517,17 @@ def _restore(root: Path) -> None:
 
 
 def _scan(options: Options, root: Path, files: list[Path]) -> int:
+    cache = None if options.no_coverage else CoverageCache()
+    history_index = load_all_history(root)
     for path in files:
         print(
             scan_file(
                 path,
                 root,
-                covered_lines=_coverage_for(options, root, path),
+                covered_lines=_coverage_for(options, root, path, cache),
                 ignore_coverage=options.no_coverage,
                 lines=options.lines,
+                history=history_index.for_file(source_key(path, root)),
             ),
             end="",
         )
@@ -551,6 +560,8 @@ def _finish(baseline_failed: bool, survived: bool) -> int:
 def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
     runner = CommandRunner(verbose=options.verbose)
     baselines: dict[tuple[tuple[str, ...], str], tuple[bool, float, str]] = {}
+    cache = None if options.no_coverage else CoverageCache()
+    history_index = load_all_history(root)
     forms = []
     written: list[str] = []
     baseline_failed = False
@@ -560,7 +571,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             path,
             root,
             runner=runner,
-            covered_lines=_coverage_for(options, root, path),
+            covered_lines=_coverage_for(options, root, path, cache),
             ignore_coverage=options.no_coverage,
             mutate_all=options.mutate_all,
             lines=options.lines,
@@ -571,6 +582,7 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             max_workers=options.max_workers,
             xcode_scheme=options.xcode_scheme,
             xcode_destination=options.xcode_destination,
+            history=history_index.for_file(source_key(path, root)),
         )
         outcome = _record(result, forms, written)
         if outcome == "baseline":

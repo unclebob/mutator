@@ -3,9 +3,12 @@ import shutil
 import subprocess
 import threading
 
-from mutator.engine import mutate_file, restore_backups
+import mutator.engine as engine_module
+from mutator.engine import mutate_file, restore_backups, scan_file
 from mutator.edn import loads
+from mutator.functions import form_digests
 from mutator.metrics import snapshot_path
+from mutator.model import History, PriorForm
 from mutator.runner import CommandResult
 from mutator.workers import create_workers, delete_tree, new_run_dir, worker_count
 
@@ -300,3 +303,123 @@ def test_restore_backups_puts_an_interrupted_mutant_back(tmp_path):
     assert restored == [source]
     assert source.read_text(encoding="utf-8") == "original\n"
     assert not backup.exists()
+
+
+def test_scan_file_skips_form_digests_without_prior_history(tmp_path, monkeypatch):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+
+    def fail_digests(*_args, **_kwargs):
+        raise AssertionError("form_digests should not run without prior history")
+
+    monkeypatch.setattr(engine_module, "form_digests", fail_digests)
+
+    from_disk = scan_file(path, tmp_path, covered_lines=None, ignore_coverage=True, lines=None)
+    from_arg = scan_file(
+        path,
+        tmp_path,
+        covered_lines=None,
+        ignore_coverage=True,
+        lines=None,
+        history=History(),
+    )
+    assert "* marks a function" not in from_disk
+    assert from_disk == from_arg
+    assert "demo.py:2" in from_disk
+
+
+def test_scan_file_marks_changed_and_new_forms_when_history_present(tmp_path):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    source = (
+        "def keep(x):\n    return x > 0\n\n"
+        "def edit(x):\n    return x > 1\n\n"
+        "def added(x):\n    return x > 2\n"
+    )
+    path.write_text(source, encoding="utf-8")
+    digests = form_digests(source, path, tmp_path)
+    history = History(
+        forms={
+            ("demo", "defn/keep"): PriorForm("demo", "defn/keep", digests[("demo", "defn/keep")], "src/demo.py"),
+            ("demo", "defn/edit"): PriorForm("demo", "defn/edit", "stale-digest", "src/demo.py"),
+        }
+    )
+
+    out = scan_file(
+        path,
+        tmp_path,
+        covered_lines=None,
+        ignore_coverage=True,
+        lines=None,
+        history=history,
+    )
+    lines = out.splitlines()
+    keep_line = next(line for line in lines if "defn/keep" in line)
+    edit_line = next(line for line in lines if "defn/edit" in line)
+    added_line = next(line for line in lines if "defn/added" in line)
+    assert keep_line.startswith("  ")
+    assert edit_line.startswith("* ")
+    assert added_line.startswith("* ")
+    assert "* marks a function" in out
+
+
+def test_mutate_file_skips_pre_selection_digests_without_prior_forms(tmp_path, monkeypatch):
+    path = tmp_path / "src" / "demo.py"
+    path.parent.mkdir()
+    path.write_text(SOURCE, encoding="utf-8")
+
+    orig_digests = form_digests
+    calls = []
+
+    def counting_digests(src, p, r):
+        calls.append(p)
+        return orig_digests(src, p, r)
+
+    monkeypatch.setattr(engine_module, "form_digests", counting_digests)
+
+    runner = FakeRunner()
+    first = mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=False,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        history=History(),
+    )
+    assert len(calls) == 1
+    assert first.forms[0].killed == 1
+
+    calls.clear()
+    prior_digests = orig_digests(SOURCE, path, tmp_path)
+    killed_ids = [mid for mid, status in first.statuses.items() if status == "killed"]
+    history = History(
+        forms={
+            ("demo", "defn/add"): PriorForm("demo", "defn/add", prior_digests[("demo", "defn/add")], "src/demo.py")
+        },
+        outcomes={mid: "killed" for mid in killed_ids},
+    )
+    calls_before = runner.calls
+    second = mutate_file(
+        path,
+        tmp_path,
+        runner=runner,
+        covered_lines=None,
+        ignore_coverage=True,
+        mutate_all=False,
+        lines=None,
+        test_command="fake",
+        timeout_factor=10,
+        mutation_warning=50,
+        baselines={},
+        history=history,
+    )
+    assert len(calls) == 2
+    assert second.forms[0].killed == 1
+    assert runner.calls - calls_before == 4

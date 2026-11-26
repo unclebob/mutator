@@ -8,7 +8,7 @@ from pathlib import Path
 from mutator.crapper_link import ensure_crapper
 from mutator.functions import form_digests, form_spans, sites_in_file
 from mutator.metrics import load_history, source_key, write_results
-from mutator.model import FormResult, RunResult, Site
+from mutator.model import FormResult, History, RunResult, Site
 from mutator.report import format_scan
 from mutator.runner import Command, CommandRunner, display_command, test_plan
 from mutator.workers import run_mutants
@@ -285,6 +285,7 @@ def mutate_file(
     max_workers: int | None = None,
     xcode_scheme: str | None = None,
     xcode_destination: str | None = None,
+    history: History | None = None,
 ) -> RunResult:
     """Mutate one file and write its namespaces into `.metrics/mutate`."""
 
@@ -302,10 +303,10 @@ def mutate_file(
     found = sites_in_file(source, path, root, file_key)
     covered = _coverage_map(found, covered_lines, ignore_coverage)
     _warn_uncovered(file_key, found, covered_lines, ignore_coverage)
-    history = load_history(root, file_key)
-    digests = form_digests(source, path, root)
-    selected = _select(found, covered, history, digests, mutate_all, lines)
-    outcomes = _carry_forward(found, covered, history, digests)
+    prior = history if history is not None else load_history(root, file_key)
+    digests = form_digests(source, path, root) if prior.forms else {}
+    selected = _select(found, covered, prior, digests, mutate_all, lines)
+    outcomes = _carry_forward(found, covered, prior, digests)
     _warn_many(file_key, selected, mutation_warning)
     failure = _apply_selected(
         path,
@@ -337,6 +338,17 @@ def mutate_file(
     )
 
 
+def _changed_forms(source: str, path: Path, root: Path, prior: History) -> set[tuple[str, str]]:
+    if not prior.forms:
+        return set()
+    digests = form_digests(source, path, root)
+    return {
+        key
+        for key, digest in digests.items()
+        if key not in prior.forms or prior.forms[key].digest != digest
+    }
+
+
 def scan_file(
     path: Path,
     root: Path,
@@ -344,6 +356,7 @@ def scan_file(
     covered_lines: set[int] | None,
     ignore_coverage: bool,
     lines: set[int] | None,
+    history: History | None = None,
 ) -> str:
     """Inventory mutation sites without running tests or writing metrics."""
 
@@ -357,13 +370,6 @@ def scan_file(
     covered = None
     if not ignore_coverage and covered_lines is not None:
         covered = _coverage_map(found, covered_lines, ignore_coverage)
-    history = load_history(root, file_key)
-    digests = form_digests(source, path, root)
-    changed = set()
-    if history.forms:
-        changed = {
-            key
-            for key, digest in digests.items()
-            if key not in history.forms or history.forms[key].digest != digest
-        }
+    prior = history if history is not None else load_history(root, file_key)
+    changed = _changed_forms(source, path, root, prior)
     return format_scan(file_key, found, changed, covered)

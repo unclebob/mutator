@@ -10,8 +10,10 @@ report has no coverage data.
 
 from __future__ import annotations
 
+import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
 from mutator.crapper_link import ensure_crapper
 
@@ -25,10 +27,10 @@ def _candidates(normalize, source_path: str) -> list[str]:
     return candidates
 
 
-def _exact(normalized: dict, candidates: list[str]):
+def _exact(exact: dict[str, Any], candidates: list[str]) -> Any:
     for candidate in candidates:
-        if candidate in normalized:
-            return normalized[candidate]
+        if candidate in exact:
+            return exact[candidate]
     return None
 
 
@@ -51,9 +53,7 @@ def _suffix_rank(key_parts: tuple[str, ...], source: tuple[str, ...]) -> tuple[i
     a longer source.
     """
 
-    if not source:
-        return None
-    if not key_parts:
+    if not source or not key_parts:
         return None
     extra = _as_suffix(key_parts, source)
     if extra is not None:
@@ -76,18 +76,11 @@ def _rank(key_parts: tuple[str, ...], sources: list[tuple[str, ...]]) -> tuple[i
         rank = _suffix_rank(key_parts, source)
         if rank is not None:
             found.append(rank)
-    if not found:
-        return None
-    return min(found)
+    return min(found) if found else None
 
 
 def _source_parts(candidates: list[str]) -> list[tuple[str, ...]]:
-    sources: list[tuple[str, ...]] = []
-    for candidate in candidates:
-        parts = _parts(candidate)
-        if parts:
-            sources.append(parts)
-    return sources
+    return [parts for candidate in candidates if (parts := _parts(candidate))]
 
 
 def _keep_match(best, best_rank, key_parts, value, rank):
@@ -98,11 +91,13 @@ def _keep_match(best, best_rank, key_parts, value, rank):
     return best_rank, best
 
 
-def _best_value(normalized: dict, sources: list[tuple[str, ...]]):
+def _best_value(
+    entries: list[tuple[int, tuple[str, ...], Any]],
+    sources: list[tuple[str, ...]],
+) -> Any:
     best_rank: tuple[int, int] | None = None
-    best: list[tuple[tuple[str, ...], object]] = []
-    for key, value in normalized.items():
-        key_parts = _parts(key)
+    best: list[tuple[tuple[str, ...], Any]] = []
+    for _order, key_parts, value in entries:
         rank = _rank(key_parts, sources)
         if rank is None:
             continue
@@ -112,21 +107,44 @@ def _best_value(normalized: dict, sources: list[tuple[str, ...]]):
     return best[0][1]
 
 
-def _lookup(index: dict, source_path: str, name: str | None = None):
-    """The report entry for one source file. `name` is the report's own name for it."""
+class NormalizedIndex:
+    """Normalized report index with O(1) exact and basename-scoped suffix lookup."""
 
-    if not index:
-        return None
-    crapper = ensure_crapper()
-    normalize = crapper.coverage.normalize_path
-    normalized = {normalize(key): value for key, value in index.items()}
-    candidates = _candidates(normalize, source_path)
-    if name:
-        candidates.append(name)
-    found = _exact(normalized, candidates)
-    if found is not None:
-        return found
-    return _best_value(normalized, _source_parts(candidates))
+    def __init__(self, index: dict[str, Any], normalize=None) -> None:
+        self._normalize = normalize if normalize is not None else ensure_crapper().coverage.normalize_path
+        self.exact: dict[str, Any] = {}
+        self.by_basename: dict[str, list[tuple[int, tuple[str, ...], Any]]] = {}
+        for order, (key, value) in enumerate(index.items()):
+            norm = self._normalize(key)
+            if norm in self.exact:
+                continue
+            self.exact[norm] = value
+            parts = _parts(norm)
+            if parts:
+                self.by_basename.setdefault(parts[-1], []).append((order, parts, value))
+
+    def _matching_entries(
+        self, sources: list[tuple[str, ...]]
+    ) -> list[tuple[int, tuple[str, ...], Any]]:
+        basenames = list(dict.fromkeys(parts[-1] for parts in sources))
+        if len(basenames) == 1:
+            return self.by_basename.get(basenames[0], [])
+        entries = [item for base in basenames for item in self.by_basename.get(base, ())]
+        entries.sort(key=lambda item: item[0])
+        return entries
+
+    def lookup(self, source_path: str, normalize=None, name: str | None = None) -> Any:
+        if not self.exact:
+            return None
+        norm_fn = self._normalize if normalize is None else normalize
+        candidates = _candidates(norm_fn, source_path)
+        if name:
+            candidates.append(name)
+        found = _exact(self.exact, candidates)
+        if found is not None:
+            return found
+        sources = _source_parts(candidates)
+        return _best_value(self._matching_entries(sources), sources)
 
 
 def _covered_from_pairs(lines: dict[int, tuple[int, int]] | None) -> set[int] | None:
@@ -135,10 +153,32 @@ def _covered_from_pairs(lines: dict[int, tuple[int, int]] | None) -> set[int] | 
     return {number for number, (covered, _total) in lines.items() if covered > 0}
 
 
+def _child_dirs(directory: Path, skip_dirs: set[str]) -> list[Path]:
+    try:
+        with os.scandir(directory) as entries:
+            dirs = [
+                Path(entry.path)
+                for entry in entries
+                if entry.name not in skip_dirs and entry.is_dir()
+            ]
+    except OSError:
+        return []
+    dirs.sort(key=lambda path: path.name)
+    return dirs
+
+
+def _subdirs_1_and_2(root: Path, skip_dirs: set[str]) -> list[Path]:
+    first = _child_dirs(root, skip_dirs)
+    second = [child for directory in first for child in _child_dirs(directory, skip_dirs)]
+    return first + second
+
+
 def _jacoco_paths(root: Path) -> list[Path]:
+    crapper = ensure_crapper()
+    skip_dirs = set(crapper.discover.SKIP_DIRS)
     paths = [root / "target" / "site" / "jacoco" / "jacoco.xml"]
-    paths.extend(root.glob("*/target/site/jacoco/jacoco.xml"))
-    paths.extend(root.glob("*/*/target/site/jacoco/jacoco.xml"))
+    for subdir in _subdirs_1_and_2(root, skip_dirs):
+        paths.append(subdir / "target" / "site" / "jacoco" / "jacoco.xml")
     return paths
 
 
@@ -221,45 +261,120 @@ def _swift_hits(record) -> set[int]:
     return {line for line, covered, _executable in record.summaries if covered > 0}
 
 
-def _swift_lines(bundle, source_path: str) -> set[int] | None:
-    crapper = ensure_crapper()
-    record = crapper.coverage._lookup(bundle.swift, source_path, bundle.source_parts)
-    if record is None:
-        return None
-    return _swift_hits(record)
-
-
-def _go_lines(root: Path, profile, source_path: str) -> set[int] | None:
-    if not profile:
-        return None
-    crapper = ensure_crapper()
-    name = crapper.coverage.go_import_name(Path(source_path), root.resolve())
-    segments = _lookup(profile, source_path, name)
+def _segments_to_lines(segments) -> set[int] | None:
     if segments is None:
         return None
     covered: set[int] = set()
     for start, end, _statements, hits in segments:
-        if hits <= 0:
-            continue
-        for line in range(start, end + 1):
-            covered.add(line)
+        if hits > 0:
+            covered.update(range(start, end + 1))
     return covered
 
 
-def covered_lines(root: Path, source_path: Path, language: str) -> set[int] | None:
-    """Lines with a hit, or None when this file is absent from coverage."""
+_FORMAT_LOADERS: dict[str, tuple[str, str]] = {
+    "lcov": ("load_lcov", "lcov"),
+    "go": ("load_go_profile", "go_profile"),
+    "clojure_html": ("load_form_html", "form_html"),
+}
 
-    crapper = ensure_crapper()
-    path = source_path.resolve().as_posix()
-    if language == "java":
-        return _lookup(_jacoco_index(root), path)
-    bundle = crapper.coverage.load_bundle(root)
-    if language == "go":
-        return _go_lines(root, bundle.go_profile, path)
-    if language == "swift":
-        return _swift_lines(bundle, path)
-    if language == "clojure":
-        html = _covered_from_pairs(_lookup(bundle.form_html, path))
+
+class CoverageCache:
+    """Lazy per-root coverage cache compatible with bundled or split crapper loaders."""
+
+    def __init__(self) -> None:
+        self._bundles: dict[Path, Any] = {}
+        self._indexes: dict[tuple[Path, str], NormalizedIndex] = {}
+        self._swift: dict[Path, dict[str, Any]] = {}
+        self._swift_hits_cache: dict[int, set[int]] = {}
+
+    def _bundle(self, root_key: Path):
+        bundle = self._bundles.get(root_key)
+        if bundle is None:
+            bundle = ensure_crapper().coverage.load_bundle(root_key)
+            self._bundles[root_key] = bundle
+        return bundle
+
+    def _load_format(self, root_key: Path, loader_name: str, bundle_attr: str) -> dict:
+        crapper = ensure_crapper()
+        loader = getattr(crapper.coverage, loader_name, None)
+        if loader is not None:
+            return loader(root_key) or {}
+        return getattr(self._bundle(root_key), bundle_attr) or {}
+
+    def _index(self, root_key: Path, kind: str) -> NormalizedIndex:
+        cache_key = (root_key, kind)
+        cached = self._indexes.get(cache_key)
+        if cached is not None:
+            return cached
+        crapper = ensure_crapper()
+        if kind == "java":
+            raw = _jacoco_index(root_key)
+        else:
+            loader_name, bundle_attr = _FORMAT_LOADERS[kind]
+            raw = self._load_format(root_key, loader_name, bundle_attr)
+        index = NormalizedIndex(raw, crapper.coverage.normalize_path)
+        self._indexes[cache_key] = index
+        return index
+
+    def _swift_map(self, root_key: Path) -> dict:
+        cached = self._swift.get(root_key)
+        if cached is None:
+            cached = self._load_format(root_key, "load_swift", "swift")
+            self._swift[root_key] = cached
+        return cached
+
+    def _swift_lines(self, root_key: Path, path: str) -> set[int] | None:
+        swift_map = self._swift_map(root_key)
+        if not swift_map:
+            return None
+        record = ensure_crapper().coverage._lookup(swift_map, path, [])
+        if record is None:
+            return None
+        key = id(record)
+        hits = self._swift_hits_cache.get(key)
+        if hits is None:
+            hits = _swift_hits(record)
+            self._swift_hits_cache[key] = hits
+        return hits
+
+    def _go_lines(self, root_key: Path, path: str) -> set[int] | None:
+        index = self._index(root_key, "go")
+        if not index.exact:
+            return None
+        crapper = ensure_crapper()
+        name = crapper.coverage.go_import_name(Path(path), root_key)
+        segments = index.lookup(path, crapper.coverage.normalize_path, name)
+        return _segments_to_lines(segments)
+
+    def _clojure_lines(self, root_key: Path, path: str, normalize) -> set[int] | None:
+        html = _covered_from_pairs(self._index(root_key, "clojure_html").lookup(path, normalize))
         if html is not None:
             return html
-    return _covered_from_pairs(_lookup(bundle.lcov, path))
+        return _covered_from_pairs(self._index(root_key, "lcov").lookup(path, normalize))
+
+    def covered_lines(self, root: Path, source_path: Path, language: str) -> set[int] | None:
+        root_key = root.resolve()
+        path = source_path.resolve().as_posix()
+        normalize = ensure_crapper().coverage.normalize_path
+        if language == "java":
+            return self._index(root_key, "java").lookup(path, normalize)
+        if language == "go":
+            return self._go_lines(root_key, path)
+        if language == "swift":
+            return self._swift_lines(root_key, path)
+        if language == "clojure":
+            return self._clojure_lines(root_key, path, normalize)
+        return _covered_from_pairs(self._index(root_key, "lcov").lookup(path, normalize))
+
+
+def covered_lines(
+    root: Path,
+    source_path: Path,
+    language: str,
+    *,
+    cache: CoverageCache | None = None,
+) -> set[int] | None:
+    """Lines with a hit, or None when this file is absent from coverage."""
+
+    active = cache if cache is not None else CoverageCache()
+    return active.covered_lines(root, source_path, language)
