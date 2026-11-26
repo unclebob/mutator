@@ -128,7 +128,8 @@ named {_skip_directory_text()} are skipped at any depth. A test directory
 ({_test_directory_text()}) is skipped when it is the first component of the
 path, and so is src/test and src/tests. A deeper directory with one of those
 names, such as src/pkg/test, is mutated. Files whose names mark them as tests
-are also skipped.
+are also skipped. Swift also skips a directory whose name ends with Tests
+(Tests, AppTests) at any depth, and a file named *Tests.swift.
 
 The default, once a snapshot exists, reruns survivors and sites in functions
 whose text changed. Killed mutants in unchanged functions are kept.

@@ -1,6 +1,6 @@
 # mutator
 
-Mutation testing for Clojure, Java, Go, TypeScript, Rust, and Python. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
+Mutation testing for Clojure, Java, Go, TypeScript, Rust, Python, and Swift. One run detects the language of each source file, applies that language's mutation rules, and writes the snapshot [uml-viewer](https://github.com/unclebob/uml-viewer) already reads.
 
 Clojure follows [clj-mutate](https://github.com/unclebob/clj-mutate). Go follows [mutate4go](https://github.com/unclebob/mutate4go). Java follows [mutate4java](https://github.com/unclebob/mutate4java). TypeScript, Rust, and Python use the same decisions as Java, spelled in that language. Function names and namespaces come from [crapper](https://github.com/unclebob/crapper), which is what uml-viewer joins to `.metrics/crap.edn`.
 
@@ -14,7 +14,7 @@ A mutant is killed when the tests fail or time out. It survives when the tests s
 
 The first run creates `.venv` and installs the tool. crapper has to be checked out next to this directory (`../crapper`), because that is where the namespace and function names come from. From a project root the tool walks the tree and writes `.metrics/mutate/<namespace>.edn`.
 
-Directories such as `vendor`, `node_modules`, `target`, `build`, and `testdata` are skipped at any depth. A test directory (`test`, `tests`, `spec`, `specs`, or `__tests__`) is skipped when it is the first component of the path, and so is `src/test` and `src/tests`. A deeper directory with one of those names, such as `src/pkg/test`, is mutated. Files whose names mark them as tests, such as `test_foo.py`, `foo_test.go`, or `foo.test.ts`, are also skipped.
+Directories such as `vendor`, `node_modules`, `target`, `build`, `.build`, `.swiftpm`, `DerivedData`, and `testdata` are skipped at any depth. A test directory (`test`, `tests`, `spec`, `specs`, or `__tests__`) is skipped when it is the first component of the path, and so is `src/test` and `src/tests`. A deeper directory with one of those names, such as `src/pkg/test`, is mutated. Files whose names mark them as tests, such as `test_foo.py`, `foo_test.go`, or `foo.test.ts`, are also skipped. Swift also skips a directory whose name ends with `Tests` (`Tests`, `AppTests`) at any depth, and a file named `*Tests.swift`.
 
 The first run of a tree executes every covered mutant. Start with the file you are working on.
 
@@ -85,8 +85,9 @@ uml-viewer loads every `*.edn` file under `.metrics/mutate`. Each file is one na
 | TypeScript | the dotted module path, or `module.Class` | the function or method name |
 | Rust | `crate::module`, or `crate::module::Type` | the function or method name |
 | Python | the dotted module path, or `module.Class` | the function or method name |
+| Swift | the module, or `Module.Type` | the function, method, initializer, or stored closure |
 
-`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, or a TypeScript `private` / `#` name uses `defn-/`.
+`defn-` is Clojure's private form. Elsewhere a private method, an unexported Go function, a Python name that starts with `_`, a Rust function that is not `pub`, a TypeScript `private` / `#` name, or a Swift `private` / `fileprivate` declaration uses `defn-/`. A closure that crapper does not report as its own entry, including a closure stored in a local `let`, is attributed to the enclosing function.
 
 ## What each language mutates
 
@@ -100,6 +101,9 @@ Tokens inside strings, comments, and quoted Clojure forms are left alone. A repl
 | TypeScript | the Java set, plus `===`/`!==`, `??` to `||`, and `?.` to `.`. A call or index drops `?.` (`a?.()` becomes `a()`). `.js`, `.jsx`, `.mjs`, and `.cjs` use these rules. |
 | Rust | the Java set (`&&`/`||`, `!`, unary `-`). |
 | Python | the Java set, spelled `and`/`or`, `not`, and `True`/`False`. |
+| Swift | the Java set, plus `===`/`!==` and `??` to `||`. A boolean condition of `if`, `guard`, `while`, or `repeat-while` is wrapped in `!()`. Comma-separated conditions are each negated. A `let` or `var` binding is not. Logical `!` and unary `-` are deleted. Force-unwrap `!` is left alone. Statements and `return`s are not deleted; the other languages do not delete them either. |
+
+Swift does not mutate `?.`. The `?` on an optional type is not an operator. `if case` is not split by the grammar crapper uses, so that statement contributes no sites.
 
 ## Tests and coverage
 
@@ -113,8 +117,15 @@ The baseline command has to pass before any mutant runs. A mutant's timeout is t
 | TypeScript | `npm test` | nearest `package.json` |
 | Rust | `cargo test` | nearest `Cargo.toml` |
 | Python | the project's `.venv` or `venv` Python running `pytest`, or `unittest discover` | nearest project file |
+| Swift | `swift test` when a `Package.swift` contains the file. Otherwise `xcodebuild test` for the nearest `.xcworkspace` or `.xcodeproj` | the package directory, or the directory that holds the Xcode project |
 
-Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so.
+`--xcode-scheme` sets the Xcode scheme. Without it, the run uses the first shared scheme, or the project name when the project has no shared scheme. `--xcode-destination` is the `xcodebuild -destination` value, passed as one argument. An iOS run needs it, for example `platform=iOS Simulator,name=iPhone 16`. iOS and Xcode tests run only on a Mac with Xcode. A file inside a SwiftPM package is tested with `swift test` even when an Xcode project is also in the tree.
+
+```bash
+./mutator --xcode-scheme App --xcode-destination 'platform=iOS Simulator,name=iPhone 16'
+```
+
+Coverage is generated with crapper's commands unless `--use-existing-coverage` or `--no-coverage` is set. A file missing from the report is treated as uncovered, and the run says so. Swift coverage is the JSON crapper writes under `target/coverage/swift/`: llvm-cov export after `swift test --enable-code-coverage`, or `xcrun xccov view --report --json` after `xcodebuild test -enableCodeCoverage YES`. A hit region marks that line. An xccov summary has no regions, so the function's line is covered when that function has covered lines.
 
 ## Development
 

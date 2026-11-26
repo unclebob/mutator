@@ -175,6 +175,7 @@ def test_xcode_options_require_a_value():
     assert "--xcode-destination" in help_text
     assert "swift test" in help_text
     assert "xcodebuild" in help_text
+    assert "*Tests.swift" in help_text
     assert parse_args(["--xcode-scheme"]).exit_code == 1
 
 
