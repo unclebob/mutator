@@ -1,7 +1,9 @@
 import subprocess
 import sys
 
-from mutator.cli import parse_args, run
+import mutator.cli as cli_module
+from mutator.cli import _coverage_for, parse_args, run
+from mutator.crapper_link import ensure_crapper
 from mutator.runner import CommandResult
 
 
@@ -122,3 +124,67 @@ def test_a_failed_coverage_command_does_not_read_the_report(tmp_path, capsys):
     assert "will not be read" in captured.err
     assert "Baseline failed" not in captured.err
     assert path.read_text(encoding="utf-8").startswith("def place")
+
+
+def test_cli_scan_and_mutate_cache_coverage_and_history_once(tmp_path, monkeypatch, capsys):
+    crapper = ensure_crapper()
+    a = tmp_path / "src" / "a.py"
+    b = tmp_path / "src" / "b.py"
+    a.parent.mkdir()
+    a.write_text("def fa(x):\n    return x > 0\n", encoding="utf-8")
+    b.write_text("def fb(x):\n    return x > 0\n", encoding="utf-8")
+    readme = tmp_path / "README.md"
+    readme.write_text("hi\n", encoding="utf-8")
+
+    lcov = tmp_path / "target" / "coverage" / "python" / "lcov.info"
+    lcov.parent.mkdir(parents=True)
+    lcov.write_text(
+        "SF:src/a.py\nDA:2,1\nend_of_record\n"
+        "SF:src/b.py\nDA:2,1\nend_of_record\n",
+        encoding="utf-8",
+    )
+
+    real_bundle = crapper.coverage.load_bundle(tmp_path)
+    monkeypatch.delattr(crapper.coverage, "load_lcov", raising=False)
+    orig_history = cli_module.load_all_history
+    bundle_calls = []
+    history_calls = []
+
+    def counting_bundle(root):
+        bundle_calls.append(root)
+        return real_bundle
+
+    def counting_history(root):
+        history_calls.append(root)
+        return orig_history(root)
+
+    monkeypatch.setattr(crapper.coverage, "load_bundle", counting_bundle)
+    monkeypatch.setattr(cli_module, "load_all_history", counting_history)
+
+    assert _coverage_for(parse_args(["--root", str(tmp_path)]), tmp_path, readme) is None
+    assert run(["--scan", "--use-existing-coverage", "--root", str(tmp_path), str(a), str(b)]) == 0
+    captured = capsys.readouterr()
+    assert "a.py:2" in captured.out
+    assert "b.py:2" in captured.out
+    assert len(bundle_calls) == 1
+    assert len(history_calls) == 1
+
+    bundle_calls.clear()
+    history_calls.clear()
+    command = f"{sys.executable} -c \"raise SystemExit(0)\""
+    code = run(
+        [
+            "--use-existing-coverage",
+            "--mutate-all",
+            "--root",
+            str(tmp_path),
+            "--test-command",
+            command,
+            str(a),
+            str(b),
+        ]
+    )
+    capsys.readouterr()
+    assert code == 3
+    assert len(bundle_calls) == 1
+    assert len(history_calls) == 1

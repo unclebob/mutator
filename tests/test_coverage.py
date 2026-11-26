@@ -2,7 +2,14 @@ import json
 from pathlib import Path
 
 from mutator.cli import run
-from mutator.coverage import covered_lines
+from mutator.coverage import (
+    CoverageCache,
+    NormalizedIndex,
+    _jacoco_paths,
+    _subdirs_1_and_2,
+    covered_lines,
+)
+from mutator.crapper_link import ensure_crapper
 
 
 def test_jacoco_marks_lines_with_covered_instructions(tmp_path):
@@ -337,3 +344,181 @@ def test_go_profile_of_a_module_in_a_subdirectory(tmp_path):
     )
     source = _go_source(tmp_path / "svc" / "calc" / "calc.go")
     assert covered_lines(tmp_path, source, "go") == {4, 5, 6}
+
+
+def test_coverage_cache_uses_per_format_loader_once_without_load_bundle(tmp_path, monkeypatch):
+    crapper = ensure_crapper()
+    a = tmp_path / "src" / "a.py"
+    b = tmp_path / "src" / "b.py"
+    a.parent.mkdir(parents=True)
+    a.write_text("def a():\n    return 1\n", encoding="utf-8")
+    b.write_text("def b():\n    return 2\n", encoding="utf-8")
+    calls = []
+
+    def fake_load_lcov(root):
+        calls.append(root)
+        return {
+            a.resolve().as_posix(): {1: (1, 1)},
+            b.resolve().as_posix(): {2: (1, 1)},
+        }
+
+    def fail_bundle(_root):
+        raise AssertionError("load_bundle should not be called when load_lcov exists")
+
+    monkeypatch.setattr(crapper.coverage, "load_lcov", fake_load_lcov, raising=False)
+    monkeypatch.setattr(crapper.coverage, "load_bundle", fail_bundle)
+
+    cache = CoverageCache()
+    assert covered_lines(tmp_path, a, "python", cache=cache) == {1}
+    assert covered_lines(tmp_path, b, "python", cache=cache) == {2}
+    assert calls == [tmp_path.resolve()]
+
+
+def test_coverage_cache_falls_back_to_single_load_bundle(tmp_path, monkeypatch):
+    crapper = ensure_crapper()
+
+    a = tmp_path / "src" / "a.py"
+    b = tmp_path / "src" / "b.py"
+    clj = tmp_path / "src" / "core.clj"
+    a.parent.mkdir(parents=True)
+    a.write_text("def a():\n    return 1\n", encoding="utf-8")
+    b.write_text("def b():\n    return 2\n", encoding="utf-8")
+    clj.write_text("(ns core)\n(defn f [] 1)\n", encoding="utf-8")
+    _lcov(
+        tmp_path,
+        [
+            (a.resolve().as_posix(), 1),
+            (b.resolve().as_posix(), 2),
+            (clj.resolve().as_posix(), 2),
+        ],
+    )
+    _go_module(tmp_path, "example.com/demo", "mode: set\nexample.com/demo/w.go:2.1,2.2 1 1\n")
+    go_file = _go_source(tmp_path / "w.go")
+    swift_file = tmp_path / "Sources" / "Demo" / "Box.swift"
+    swift_file.parent.mkdir(parents=True)
+    swift_file.write_text("func f() -> Int { 1 }\n", encoding="utf-8")
+    _llvm_regions(tmp_path, swift_file, [[1, 1, 1, 10, 1, 0, 0, 0]])
+
+    real_bundle = crapper.coverage.load_bundle(tmp_path)
+    for loader in ("load_lcov", "load_go_profile", "load_form_html", "load_swift"):
+        monkeypatch.delattr(crapper.coverage, loader, raising=False)
+
+    bundle_calls = []
+
+    def counting_load_bundle(root):
+        bundle_calls.append(root)
+        return real_bundle
+
+    monkeypatch.setattr(crapper.coverage, "load_bundle", counting_load_bundle)
+
+    cache = CoverageCache()
+    assert covered_lines(tmp_path, a, "python", cache=cache) == {1}
+    assert covered_lines(tmp_path, b, "python", cache=cache) == {2}
+    assert covered_lines(tmp_path, clj, "clojure", cache=cache) == {2}
+    assert covered_lines(tmp_path, go_file, "go", cache=cache) == {2}
+    assert covered_lines(tmp_path, swift_file, "swift", cache=cache) == {1}
+    assert covered_lines(tmp_path, swift_file, "swift", cache=cache) == {1}
+    assert bundle_calls == [tmp_path.resolve()]
+
+
+def test_coverage_cache_caches_jacoco_and_empty_reports(tmp_path, monkeypatch):
+    import mutator.coverage as coverage_module
+
+    crapper = ensure_crapper()
+    report = tmp_path / "target" / "site" / "jacoco" / "jacoco.xml"
+    report.parent.mkdir(parents=True)
+    report.write_text(
+        """<?xml version="1.0"?>
+<report name="demo">
+  <package name="demo">
+    <sourcefile name="One.java">
+      <line nr="2" mi="0" ci="1" mb="0" cb="0"/>
+    </sourcefile>
+    <sourcefile name="Two.java">
+      <line nr="3" mi="0" ci="1" mb="0" cb="0"/>
+    </sourcefile>
+  </package>
+</report>
+""",
+        encoding="utf-8",
+    )
+    one = tmp_path / "src" / "demo" / "One.java"
+    two = tmp_path / "src" / "demo" / "Two.java"
+    one.parent.mkdir(parents=True)
+    one.write_text("package demo;\nclass One {}\n", encoding="utf-8")
+    two.write_text("package demo;\nclass Two {}\n", encoding="utf-8")
+
+    orig_jacoco = coverage_module._jacoco_index
+    calls = []
+
+    def counting_jacoco(root):
+        calls.append(root)
+        return orig_jacoco(root)
+
+    monkeypatch.setattr(coverage_module, "_jacoco_index", counting_jacoco)
+    cache = CoverageCache()
+    assert covered_lines(tmp_path, one, "java", cache=cache) == {2}
+    assert covered_lines(tmp_path, two, "java", cache=cache) == {3}
+    assert calls == [tmp_path.resolve()]
+
+    monkeypatch.setattr(crapper.coverage, "load_form_html", lambda _r: {"src/demo/core.clj": {4: (1, 1)}}, raising=False)
+    monkeypatch.setattr(crapper.coverage, "load_lcov", lambda _r: (_ for _ in ()).throw(AssertionError("unexpected")), raising=False)
+    clj = tmp_path / "src" / "demo" / "core.clj"
+    clj.write_text("(ns demo.core)\n", encoding="utf-8")
+    assert covered_lines(tmp_path, clj, "clojure", cache=CoverageCache()) == {4}
+
+
+def test_jacoco_paths_skip_skip_dirs(tmp_path):
+    (tmp_path / "afile.txt").write_text("x", encoding="utf-8")
+    for rel in (
+        "node_modules/pkg/target/site/jacoco/jacoco.xml",
+        "build/sub/target/site/jacoco/jacoco.xml",
+        "svc/target/site/jacoco/jacoco.xml",
+        "group/mod/target/site/jacoco/jacoco.xml",
+    ):
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True)
+        path.write_text("<report/>", encoding="utf-8")
+
+    paths = _jacoco_paths(tmp_path)
+    as_rel = [path.relative_to(tmp_path).as_posix() for path in paths]
+    assert "node_modules/pkg/target/site/jacoco/jacoco.xml" not in as_rel
+    assert "build/sub/target/site/jacoco/jacoco.xml" not in as_rel
+    assert as_rel == [
+        "target/site/jacoco/jacoco.xml",
+        "group/target/site/jacoco/jacoco.xml",
+        "svc/target/site/jacoco/jacoco.xml",
+        "group/mod/target/site/jacoco/jacoco.xml",
+    ]
+    assert _subdirs_1_and_2(tmp_path / "does-not-exist", {"node_modules"}) == []
+
+
+def test_normalized_index_parity(tmp_path):
+    normalize = ensure_crapper().coverage.normalize_path
+    assert NormalizedIndex({}, normalize).lookup("src/app.py", normalize) is None
+
+    source = _py_source(tmp_path)
+    parts = [part for part in source.resolve().as_posix().split("/") if part]
+
+    exact_idx = NormalizedIndex({"./src/app.py": {1}, "src/app.py": {9}}, normalize)
+    assert exact_idx.lookup("src/app.py", normalize) == {1}
+
+    trailing_idx = NormalizedIndex(
+        {"pre/" + "/".join(parts): {2}, "pre/" + "/".join(parts) + "/": {9}},
+        normalize,
+    )
+    assert trailing_idx.lookup(str(source), normalize) == {2}
+
+    prefixed = "x/y/" + "/".join(parts)
+    shorter = "/".join(parts[1:])
+    prefixed_idx = NormalizedIndex({prefixed: {2}, shorter: {9}}, normalize)
+    assert prefixed_idx.lookup(str(source), normalize) == {2}
+
+    tie_idx = NormalizedIndex({"left/src/app.py": {1}, "right/src/app.py": {2}}, normalize)
+    assert tie_idx.lookup("src/app.py", normalize) is None
+
+    assert tie_idx.lookup("", normalize) is None
+    assert tie_idx.lookup("other.py", normalize) is None
+
+    multi_idx = NormalizedIndex({"pkg/named.py": {7}, "other/app.py": {8}}, normalize)
+    assert multi_idx.lookup("src/app.py", normalize, name="pkg/named.py") == {7}

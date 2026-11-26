@@ -77,19 +77,29 @@ def _form_file(form: dict, data: dict) -> str | None:
     return source if isinstance(source, str) else None
 
 
-def _remember_form(history: History, namespace: str, form: dict, data: dict, file_key: str) -> None:
-    if _form_file(form, data) != file_key:
-        return
+def _iter_snapshots(root: Path):
+    for path in _edn_files(root):
+        data = _read(path)
+        if data is None:
+            continue
+        namespace = data.get("namespace")
+        if isinstance(namespace, str):
+            yield data, namespace
+
+
+def _parse_prior_form(namespace: str, form: dict, data: dict) -> PriorForm | None:
+    file_name = _form_file(form, data)
     form_id = form.get("id")
     digest = form.get("hash")
-    if not isinstance(form_id, str) or not isinstance(digest, str):
-        return
-    history.forms[(namespace, form_id)] = PriorForm(
-        namespace=namespace,
-        id=form_id,
-        digest=digest,
-        file=file_key,
-    )
+    if file_name is None or not isinstance(form_id, str) or not isinstance(digest, str):
+        return None
+    return PriorForm(namespace=namespace, id=form_id, digest=digest, file=file_name)
+
+
+def _remember_form(history: History, namespace: str, form: dict, data: dict, file_key: str) -> None:
+    prior = _parse_prior_form(namespace, form, data)
+    if prior is not None and prior.file == file_key:
+        history.forms[(namespace, prior.id)] = prior
 
 
 def _remember_forms(history: History, data: dict, namespace: str, file_key: str) -> None:
@@ -107,16 +117,43 @@ def load_history(root: Path, file_key: str) -> History:
     """Prior form hashes and outcomes recorded for `file_key`."""
 
     history = History()
-    for path in _edn_files(root):
-        data = _read(path)
-        if data is None:
-            continue
-        namespace = data.get("namespace")
-        if not isinstance(namespace, str):
-            continue
+    for data, namespace in _iter_snapshots(root):
         _remember_forms(history, data, namespace, file_key)
         _remember_outcomes(history, data, file_key)
     return history
+
+
+class HistoryIndex:
+    """Pre-loaded history across `.metrics/mutate/*.edn` snapshots, indexed by file."""
+
+    def __init__(self, histories: dict[str, History] | None = None) -> None:
+        self._histories: dict[str, History] = histories if histories is not None else {}
+
+    def for_file(self, file_key: str) -> History:
+        history = self._histories.get(file_key)
+        if history is None:
+            return History()
+        return History(forms=dict(history.forms), outcomes=dict(history.outcomes))
+
+
+def _index_snapshot(histories: dict[str, History], data: dict, namespace: str) -> None:
+    for form in _forms_of(data):
+        prior = _parse_prior_form(namespace, form, data)
+        if prior is not None:
+            histories.setdefault(prior.file, History()).forms[(namespace, prior.id)] = prior
+    for mutation, status in _outcomes_of(data).items():
+        file_name = mutation_file(mutation)
+        if file_name is not None:
+            histories.setdefault(file_name, History()).outcomes[mutation] = status
+
+
+def load_all_history(root: Path) -> HistoryIndex:
+    """Read all `.metrics/mutate` snapshots once and index them by source file key."""
+
+    histories: dict[str, History] = {}
+    for data, namespace in _iter_snapshots(root):
+        _index_snapshot(histories, data, namespace)
+    return HistoryIndex(histories)
 
 
 def _render_form(form: FormResult) -> dict:
