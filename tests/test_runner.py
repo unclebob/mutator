@@ -72,6 +72,14 @@ def test_python_command_uses_an_absolute_project_interpreter(tmp_path):
     ]
 
 
+def test_python_command_uses_a_windows_virtualenv(tmp_path):
+    project = tmp_path / "proj"
+    binary = project / ".venv" / "Scripts" / "python.exe"
+    _executable(binary)
+    (project / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    assert _python_command(project) == [str(binary.absolute()), "-m", "pytest"]
+
+
 def test_python_command_keeps_the_virtualenv_symlink(tmp_path):
     project = tmp_path / "proj"
     target = project / "real-python"
