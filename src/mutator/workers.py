@@ -1,9 +1,10 @@
 """Run mutants in symlink overlays, the way clj-mutate runs its workers.
 
 Each worker is a directory under target/mutation-workers. Project files are
-linked in. The file under test is a private copy, so workers can mutate it at
-the same time without touching the original tree. The overlay is removed when
-the file's mutants finish.
+linked in. An Xcode project or workspace is copied instead, because xcodebuild
+realpaths a symlink and would compile the original tree. The file under test
+is a private copy, so workers can mutate it at the same time without touching
+the original tree. The overlay is removed when the file's mutants finish.
 """
 
 from __future__ import annotations
@@ -43,6 +44,9 @@ SKIP_LINK = frozenset(
         ".mypy_cache",
         ".clj-kondo",
         ".gradle",
+        ".build",
+        ".swiftpm",
+        "DerivedData",
     }
 )
 
@@ -139,6 +143,28 @@ def _copy_configs(worker: Path, root: Path, relative: str) -> None:
         (worker / name).write_bytes(source.read_bytes())
 
 
+def _xcode_bundle(path: Path) -> bool:
+    """An Xcode project or workspace. xcodebuild realpaths it before compiling."""
+
+    return path.suffix in {".xcodeproj", ".xcworkspace"} and path.is_dir()
+
+
+def _copy_bundle(source: Path, destination: Path) -> None:
+    """A real directory tree, so realpath stays inside the worker."""
+
+    destination.mkdir(parents=True)
+    for child in source.iterdir():
+        _place_bundle_entry(destination, child)
+
+
+def _place_bundle_entry(destination: Path, child: Path) -> None:
+    target = destination / child.name
+    if child.is_dir():
+        _copy_bundle(child, target)
+        return
+    target.write_bytes(child.read_bytes())
+
+
 def _link_children(worker_dir: Path, real_dir: Path, skip: set[str]) -> None:
     if not real_dir.is_dir():
         return
@@ -147,6 +173,9 @@ def _link_children(worker_dir: Path, real_dir: Path, skip: set[str]) -> None:
             continue
         destination = worker_dir / child.name
         if destination.exists() or destination.is_symlink():
+            continue
+        if _xcode_bundle(child):
+            _copy_bundle(child, destination)
             continue
         symlink(destination, child)
 

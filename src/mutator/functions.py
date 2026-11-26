@@ -46,6 +46,10 @@ def _typescript_private(name: str, header: str) -> bool:
     return name.startswith("#") or bool(re.search(r"\bprivate\b", header))
 
 
+def _swift_private(header: str) -> bool:
+    return re.search(r"\b(?:fileprivate|private)\b", header) is not None
+
+
 def is_private(language: str, name: str, source: str, start: int, end: int) -> bool:
     """True when uml-viewer should treat the operation as private."""
 
@@ -62,6 +66,8 @@ def is_private(language: str, name: str, source: str, start: int, end: int) -> b
         return re.match(r"pub\s", header) is None
     if language == "typescript":
         return _typescript_private(name, header)
+    if language == "swift":
+        return _swift_private(header)
     return False
 
 

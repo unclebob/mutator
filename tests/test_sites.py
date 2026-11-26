@@ -29,6 +29,8 @@ def test_clojure_rules_follow_clj_mutate_and_mark_private_defns(tmp_path):
     assert ("defn/place", "1", "0") in described
     assert ("defn-/hide", "false", "true") in described
     assert {site.namespace for site in sites} == {"demo.core"}
+    plus = [site for site in sites if site.original == "+"]
+    assert [site.anchor_line for site in plus] == [4]
     functions = project_functions(source, tmp_path / "src/demo/core.clj", tmp_path)
     assert form_id("hide", True) == "defn-/hide"
     assert is_private("clojure", "hide", source, 6, 7)
@@ -40,10 +42,23 @@ def test_clojure_ignores_strings_comments_and_quotes(tmp_path):
 (defn place []
   (comment (+ 1 0))
   (quote (+ 1 0))
+  '(+ 1 0)
   (str "true + 1"))
 """
     sites = _sites(tmp_path, "src/demo/core.clj", source)
     assert sites == []
+
+
+def test_a_clojure_vector_and_a_capitalized_symbol_are_not_calls(tmp_path):
+    source = """(defn place []
+  [+ 1]
+  True)
+"""
+    sites = _sites(tmp_path, "src/demo/core.clj", source)
+    described = {(site.original, site.mutant) for site in sites}
+    assert ("+", "-") not in described
+    assert ("True", "False") not in described
+    assert ("1", "0") in described
 
 
 def test_java_rules_follow_mutate4java(tmp_path):

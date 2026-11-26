@@ -11,6 +11,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from mutator.crapper_link import ensure_crapper
+
 Command = str | list[str]
 
 
@@ -222,6 +224,61 @@ def _python_plan(root: Path, source: Path) -> tuple[Command, Path]:
     return _python_command(directory), directory
 
 
+def _xcode_flag(project: Path) -> str:
+    if project.suffix == ".xcworkspace":
+        return "-workspace"
+    return "-project"
+
+
+def _xcode_scheme(project: Path, requested: str | None) -> str:
+    if requested:
+        return requested
+    schemes = ensure_crapper().runners.xcode_schemes(project)
+    if schemes:
+        return schemes[0]
+    return project.stem
+
+
+def _xcode_command(project: Path, scheme: str | None, destination: str | None) -> list[str]:
+    """The project path is relative to the working directory, which is ``project.parent``.
+
+    An absolute path would name the original tree. The worker maps the working
+    directory and would then compile the unmutated project.
+    """
+
+    command = [
+        "xcodebuild",
+        "test",
+        _xcode_flag(project),
+        project.name,
+        "-scheme",
+        _xcode_scheme(project, scheme),
+    ]
+    if destination:
+        command.extend(["-destination", destination])
+    return command
+
+
+def _swift_plan(
+    root: Path, source: Path, scheme: str | None, destination: str | None
+) -> tuple[Command, Path]:
+    """SwiftPM uses ``swift test``. An Xcode or iOS project uses ``xcodebuild``.
+
+    A file inside a package is not also sent to xcodebuild. Coverage stays
+    with crapper; this command only decides whether the tests pass.
+    """
+
+    crapper = ensure_crapper()
+    packages = crapper.runners.swift_packages(root, [source])
+    if packages:
+        return ["swift", "test"], packages[0]
+    projects = crapper.runners.xcode_projects(root, [source])
+    if not projects:
+        return ["swift", "test"], root
+    project = projects[0]
+    return _xcode_command(project, scheme, destination), project.parent
+
+
 _PLANS = {
     "clojure": _clojure_plan,
     "java": _java_plan,
@@ -232,16 +289,28 @@ _PLANS = {
 }
 
 
-def test_plan(root: Path, source: Path, language: str, override: str | None) -> tuple[Command, Path]:
+def test_plan(
+    root: Path,
+    source: Path,
+    language: str,
+    override: str | None,
+    *,
+    xcode_scheme: str | None = None,
+    xcode_destination: str | None = None,
+) -> tuple[Command, Path]:
     """The test command and the directory it runs in.
 
     A user override stays a shell string. Every generated command is an
-    argument vector, so a package path is one argument.
+    argument vector, so a package path or an Xcode destination is one argument.
+    ``xcode_scheme`` and ``xcode_destination`` apply to an Xcode or iOS project.
+    iOS needs a destination and a Mac with Xcode.
     """
 
     root = root.resolve()
     if override:
         return override, root
+    if language == "swift":
+        return _swift_plan(root, source.resolve(), xcode_scheme, xcode_destination)
     plan = _PLANS.get(language)
     if plan is None:
         return ["false"], root

@@ -10,6 +10,11 @@ under src/test or src/tests, the Maven and Gradle test layout. SKIP_DIRS are
 skipped at any depth. Filename-based test files are still detected by
 crapper.discover.is_test_file, applied to the filename so the any-depth
 directory check is not reused.
+
+Swift adds its own names. A directory component that ends with ``Tests``
+(``Tests``, ``AppTests``) is a test target at any depth, and so is a file
+named ``*Tests.swift``. ``.build``, ``.swiftpm``, and ``DerivedData`` are
+crapper SKIP_DIRS.
 """
 
 from __future__ import annotations
@@ -29,6 +34,18 @@ def is_test_path(relative: Path, test_dirs: set[str]) -> bool:
     return len(parts) >= 2 and parts[0] == "src" and parts[1] in SRC_TEST_DIRS
 
 
+def _swift_test_relative(relative: Path) -> bool:
+    """A Swift directory named ``Tests`` or ending in ``Tests`` is a test target.
+
+    ``*Tests.swift`` is crapper's filename rule, applied to the file name.
+    ``test`` at any depth stays a production path. Swift's name is ``Tests``.
+    """
+
+    if relative.suffix != ".swift":
+        return False
+    return any(part.endswith("Tests") for part in relative.parts[:-1])
+
+
 def _relative_to(path: Path, root: Path) -> Path | None:
     try:
         return path.resolve().relative_to(root.resolve())
@@ -46,6 +63,8 @@ def is_mutable_source(path: Path, root: Path, crapper) -> bool:
         return False
     if is_test_path(relative, set(crapper.discover.TEST_DIRS)):
         return False
+    if _swift_test_relative(relative):
+        return False
     return not crapper.discover.is_test_file(path.name)
 
 
@@ -54,6 +73,8 @@ def is_skipped_test(path: Path, root: Path, crapper) -> bool:
         return False
     relative = _relative_to(path, root)
     if relative is not None and is_test_path(relative, set(crapper.discover.TEST_DIRS)):
+        return True
+    if relative is not None and _swift_test_relative(relative):
         return True
     return crapper.discover.is_test_file(path.name)
 
