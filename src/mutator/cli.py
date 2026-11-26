@@ -68,7 +68,7 @@ def _test_directory_text() -> str:
 HELP = f"""\
 Usage: mutator [options] [path-or-filter ...]
 
-Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, and Python,
+Discover mutation sites in Clojure, Java, Go, TypeScript, Rust, Python, and Swift,
 run the project's tests against each one, and write `.metrics/mutate` for
 uml-viewer. Namespaces and function names are the ones crapper writes into
 `.metrics/crap.edn`.
@@ -102,6 +102,11 @@ Options:
   --test-command <cmd>          Run this command for the baseline and every
                                 mutant. The working directory is the project
                                 root.
+  --xcode-scheme <name>         Scheme for an Xcode or iOS test run. Default:
+                                the first shared scheme, or the project name.
+  --xcode-destination <dest>    xcodebuild -destination value. iOS needs this,
+                                and a Mac with Xcode. Example:
+                                platform=iOS Simulator,name=iPhone 16.
   --timeout-factor <number>     Mutant timeout, as a multiple of the baseline
                                 duration. Default: 10. The timeout is at least
                                 2 seconds.
@@ -147,6 +152,11 @@ Coverage, when it is produced, uses the same commands as crapper:
   TypeScript   npm run coverage, Vitest, or c8
   Rust         cargo llvm-cov or cargo tarpaulin
   Python       coverage.py LCOV
+  Swift        swift test --enable-code-coverage, then llvm-cov JSON;
+               or xcodebuild test and xcrun xccov view --report --json
+
+SwiftPM tests are `swift test`. Xcode and iOS tests are `xcodebuild test`.
+iOS runs only on a Mac with Xcode.
 
 A site on a line the report does not mark as hit is uncovered and is not run.
 """
@@ -168,6 +178,8 @@ class Options:
     use_existing_coverage: bool = False
     coverage_command: str | None = None
     test_command: str | None = None
+    xcode_scheme: str | None = None
+    xcode_destination: str | None = None
     timeout_factor: float = 10.0
     mutation_warning: int = 50
     max_workers: int | None = None
@@ -229,6 +241,14 @@ def parse_args(argv: list[str] | None = None) -> Options:
                 continue
             if arg == "--test-command":
                 options.test_command = _take(args, index, arg)
+                index += 2
+                continue
+            if arg == "--xcode-scheme":
+                options.xcode_scheme = _take(args, index, arg)
+                index += 2
+                continue
+            if arg == "--xcode-destination":
+                options.xcode_destination = _take(args, index, arg)
                 index += 2
                 continue
             if arg == "--timeout-factor":
@@ -548,6 +568,8 @@ def _mutate_files(options: Options, root: Path, files: list[Path]) -> int:
             mutation_warning=options.mutation_warning,
             baselines=baselines,
             max_workers=options.max_workers,
+            xcode_scheme=options.xcode_scheme,
+            xcode_destination=options.xcode_destination,
         )
         outcome = _record(result, forms, written)
         if outcome == "baseline":

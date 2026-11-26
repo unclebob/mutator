@@ -43,6 +43,9 @@ SKIP_LINK = frozenset(
         ".mypy_cache",
         ".clj-kondo",
         ".gradle",
+        ".build",
+        ".swiftpm",
+        "DerivedData",
     }
 )
 
